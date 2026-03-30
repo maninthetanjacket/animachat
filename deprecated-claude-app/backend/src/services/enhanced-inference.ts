@@ -126,6 +126,8 @@ const INPUT_PRICING_PER_MILLION: Record<string, number> = {
   'gemini-2.5-pro': 1.25,
   
   // Gemini 3 Pro (preview pricing, may change)
+  'gemini-3.1-pro-preview': 1.25,
+  'gemini-3.1-pro-text': 1.25,
   'gemini-3-pro-preview': 1.25,
   'gemini-3-pro-image-preview': 1.25,
   
@@ -210,6 +212,8 @@ const OUTPUT_PRICING_PER_MILLION: Record<string, number> = {
   'gemini-2.5-pro': 5.00,
   
   // Gemini 3 Pro (preview pricing)
+  'gemini-3.1-pro-preview': 5.00,
+  'gemini-3.1-pro-text': 5.00,
   'gemini-3-pro-preview': 5.00,
   'gemini-3-pro-image-preview': 5.00,
   
