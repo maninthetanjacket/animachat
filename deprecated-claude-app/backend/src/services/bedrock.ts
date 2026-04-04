@@ -9,11 +9,12 @@ const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 export class BedrockService {
   private client: BedrockRuntimeClient;
+  private apacClient: BedrockRuntimeClient;
   private db: Database;
 
   constructor(db: Database, credentials?: import('@deprecated-claude/shared').BedrockCredentials) {
     this.db = db;
-    
+
     // Initialize Bedrock client with user credentials or environment variables
     if (credentials) {
       this.client = new BedrockRuntimeClient({
@@ -37,6 +38,23 @@ export class BedrockService {
         })
       });
     }
+
+    // APAC client for apac.anthropic.* cross-region inference
+    const apacCreds = credentials ? {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+    } : (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY ? {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    } : undefined);
+    this.apacClient = new BedrockRuntimeClient({
+      region: 'ap-southeast-1',
+      ...(apacCreds && { credentials: apacCreds })
+    });
+  }
+
+  private getClientForModel(modelId: string): BedrockRuntimeClient {
+    return modelId.startsWith('apac.') ? this.apacClient : this.client;
   }
 
   async streamCompletion(
@@ -98,7 +116,8 @@ export class BedrockService {
         accept: 'application/json'
       });
 
-      const response = await this.client.send(command);
+      const targetClient = this.getClientForModel(bedrockModelId);
+      const response = await targetClient.send(command);
       
       if (!response.body) {
         throw new Error('No response body from Bedrock');
