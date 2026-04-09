@@ -74,16 +74,37 @@
             
             <!-- Provider-specific fields -->
             
-            <!-- Anthropic API Key -->
-            <v-text-field
-              v-if="newKey.provider === 'anthropic'"
-              v-model="newKey.credentials.apiKey"
-              label="API Key"
-              type="password"
-              variant="outlined"
-              density="compact"
-              class="mt-2"
-            />
+            <!-- Anthropic -->
+            <template v-if="newKey.provider === 'anthropic'">
+              <v-select
+                v-model="newKey.credentials.transport"
+                :items="anthropicTransportOptions"
+                label="Transport"
+                variant="outlined"
+                density="compact"
+                class="mt-2"
+                hint="Use the Anthropic API directly, or route requests through a locally installed Claude Code CLI with `claude -p`."
+                persistent-hint
+              />
+              <v-text-field
+                v-if="newKey.credentials.transport !== 'claude-cli'"
+                v-model="newKey.credentials.apiKey"
+                label="API Key"
+                type="password"
+                variant="outlined"
+                density="compact"
+                class="mt-2"
+              />
+              <v-alert
+                v-else
+                type="info"
+                variant="tonal"
+                density="compact"
+                class="mt-2"
+              >
+                Claude CLI mode uses the `claude` command on the backend host. Claude Code must be installed there and already authenticated.
+              </v-alert>
+            </template>
             
             <!-- OpenRouter API Key -->
             <v-text-field
@@ -159,6 +180,16 @@
                 variant="outlined"
                 density="compact"
                 class="mt-2"
+              />
+              <v-select
+                v-model="newKey.credentials.apiMode"
+                :items="openAICompatibleApiModes"
+                label="API Type"
+                variant="outlined"
+                density="compact"
+                class="mt-2"
+                hint="Use Responses for OpenAI, Chat Completions for Ollama/LM Studio/vLLM, or Auto to infer from the URL."
+                persistent-hint
               />
               <v-text-field
                 v-model="newKey.credentials.modelPrefix"
@@ -337,12 +368,14 @@ const newKey = ref({
   provider: 'anthropic',
   credentials: {
     apiKey: '',
+    transport: 'api',
     accessKeyId: '',
     secretAccessKey: '',
     region: 'us-east-1',
     sessionToken: '',
     baseUrl: '',
-    modelPrefix: ''
+    modelPrefix: '',
+    apiMode: 'auto'
   }
 });
 
@@ -354,6 +387,15 @@ const providers = [
   { value: 'google', title: 'Google (Gemini)' }
 ];
 const codeThemes = ['github', 'monokai', 'dracula', 'vs-dark'];
+const anthropicTransportOptions = [
+  { title: 'Anthropic API', value: 'api' },
+  { title: 'Claude CLI (`claude -p`)', value: 'claude-cli' }
+];
+const openAICompatibleApiModes = [
+  { title: 'Auto Detect', value: 'auto' },
+  { title: 'Chat Completions', value: 'chat-completions' },
+  { title: 'Responses API', value: 'responses' }
+];
 
 const providerChipMeta: Record<string, { label: string; color: string }> = {
   anthropic: { label: 'Anthropic API', color: 'primary' },
@@ -376,6 +418,8 @@ const isValidApiKey = computed(() => {
   
   switch (newKey.value.provider) {
     case 'anthropic':
+      if (newKey.value.credentials.transport === 'claude-cli') return true;
+      return !!newKey.value.credentials.apiKey;
     case 'openrouter':
     case 'google':
       return !!newKey.value.credentials.apiKey;
@@ -437,6 +481,11 @@ async function addApiKey() {
     
     switch (newKey.value.provider) {
       case 'anthropic':
+        payload.credentials = {
+          transport: newKey.value.credentials.transport || 'api',
+          ...(newKey.value.credentials.transport !== 'claude-cli' && { apiKey: newKey.value.credentials.apiKey })
+        };
+        break;
       case 'openrouter':
       case 'google':
         payload.credentials = { apiKey: newKey.value.credentials.apiKey };
@@ -453,6 +502,7 @@ async function addApiKey() {
         payload.credentials = {
           apiKey: newKey.value.credentials.apiKey,
           baseUrl: newKey.value.credentials.baseUrl,
+          apiMode: newKey.value.credentials.apiMode || 'auto',
           ...(newKey.value.credentials.modelPrefix && { modelPrefix: newKey.value.credentials.modelPrefix })
         };
         break;
@@ -467,12 +517,14 @@ async function addApiKey() {
       provider: 'anthropic',
       credentials: {
         apiKey: '',
+        transport: 'api',
         accessKeyId: '',
         secretAccessKey: '',
         region: 'us-east-1',
         sessionToken: '',
         baseUrl: '',
-        modelPrefix: ''
+        modelPrefix: '',
+        apiMode: 'auto'
       }
     };
   } catch (error) {

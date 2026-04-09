@@ -283,7 +283,8 @@ export function customModelsRouter(db: Database): Router {
           db,
           model.customEndpoint.apiKey || '',
           model.customEndpoint.baseUrl,
-          undefined
+          undefined,
+          model.customEndpoint.apiMode || 'auto'
         );
         
         try {
@@ -384,4 +385,3 @@ export function customModelsRouter(db: Database): Router {
 
   return router;
 }
-

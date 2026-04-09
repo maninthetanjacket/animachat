@@ -2060,7 +2060,9 @@ export class Database {
     
     // Create masked version for display
     let masked = '****';
-    if ('apiKey' in apiKey.credentials) {
+    if ((apiKey.credentials as any).transport === 'claude-cli') {
+      masked = 'Claude CLI';
+    } else if ('apiKey' in apiKey.credentials && (apiKey.credentials as any).apiKey) {
       masked = '****' + (apiKey.credentials.apiKey as string).slice(-4);
     } else if ('accessKeyId' in apiKey.credentials) {
       masked = '****' + (apiKey.credentials.accessKeyId as string).slice(-4);

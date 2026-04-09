@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { spawn } from 'node:child_process';
 import { Message, getActiveBranch, ModelSettings } from '@deprecated-claude/shared';
 import { Database } from '../database/index.js';
 import { llmLogger } from '../utils/llmLogger.js';
@@ -6,21 +7,25 @@ import sharp from 'sharp';
 
 // Anthropic's image size limit is 5MB, we target 4MB to have margin
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+type AnthropicTransport = 'api' | 'claude-cli';
 
 export class AnthropicService {
   private client: Anthropic;
   private db: Database;
+  private apiKey?: string;
+  private transport: AnthropicTransport;
 
-  constructor(db: Database, apiKey?: string) {
+  constructor(db: Database, apiKey?: string, options?: { transport?: AnthropicTransport }) {
     this.db = db;
+    this.apiKey = apiKey || process.env.ANTHROPIC_API_KEY;
+    this.transport = options?.transport || 'api';
     
-    const resolvedKey = apiKey || process.env.ANTHROPIC_API_KEY;
-    if (!resolvedKey) {
+    if (this.transport === 'api' && !this.apiKey) {
       console.error('⚠️ API KEY ERROR: No Anthropic API key provided. Set ANTHROPIC_API_KEY environment variable or configure user API keys. API calls will fail.');
     }
     
     this.client = new Anthropic({
-      apiKey: resolvedKey || 'missing-api-key'
+      apiKey: this.apiKey || 'missing-api-key'
     });
   }
 
@@ -38,21 +43,21 @@ export class AnthropicService {
       cacheCreationInputTokens: number;
       cacheReadInputTokens: number;
     },
-    rawRequest?: {
-      model: string;
-      system?: string;
-      messages: any[];
-      max_tokens: number;
-      temperature?: number;
-      top_p?: number;
-      top_k?: number;
-      stop_sequences?: string[];
-    }
+    rawRequest?: any
   }> {
     // Demo mode - simulate streaming response
     if (process.env.DEMO_MODE === 'true') {
       await this.simulateStreamingResponse(messages, onChunk);
       return {}; // No usage metrics in demo mode
+    }
+
+    if (this.transport === 'claude-cli') {
+      return this.streamCompletionViaClaudeCli(
+        modelId,
+        messages,
+        systemPrompt,
+        onChunk
+      );
     }
 
     let requestId: string | undefined;
@@ -766,6 +771,311 @@ export class AnthropicService {
     return this.getMediaType(fileName);
   }
 
+  private async streamCompletionViaClaudeCli(
+    modelId: string,
+    messages: Message[],
+    systemPrompt: string | undefined,
+    onChunk: (chunk: string, isComplete: boolean, contentBlocks?: any[], usage?: any) => Promise<void>
+  ): Promise<{ rawRequest?: any }> {
+    const anthropicMessages = await this.formatMessagesForAnthropic(messages);
+    const cliModelId = this.mapModelIdToClaudeCli(modelId);
+    const prompt = this.buildClaudeCliPrompt(anthropicMessages);
+    const cliCommand = process.env.ANTHROPIC_CLAUDE_CLI_PATH || 'claude';
+    const requestId = `anthropic-cli-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const startTime = Date.now();
+
+    const args = [
+      '-p',
+      prompt,
+      '--model',
+      cliModelId,
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '--permission-mode',
+      'bypassPermissions',
+      '--tools',
+      '',
+      '--no-session-persistence',
+      '--setting-sources',
+      'user'
+    ];
+
+    if (systemPrompt) {
+      args.push('--system-prompt', systemPrompt);
+    }
+
+    const rawRequest = {
+      transport: 'claude-cli',
+      command: cliCommand,
+      model: cliModelId,
+      system: systemPrompt,
+      prompt,
+      args: args.filter(arg => arg !== prompt)
+    };
+
+    await llmLogger.logRequest({
+      requestId,
+      service: 'anthropic',
+      model: cliModelId,
+      systemPrompt,
+      messageCount: anthropicMessages.length,
+      requestBody: rawRequest
+    });
+
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+    let emittedText = '';
+    const chunks: string[] = [];
+    let streamChain = Promise.resolve();
+
+    const emitDelta = (delta: string) => {
+      if (!delta) return;
+      emittedText += delta;
+      chunks.push(delta);
+      streamChain = streamChain.then(() => onChunk(delta, false));
+    };
+
+    const processOutputLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+
+      let parsed: any;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        return;
+      }
+
+      const directDelta = this.extractClaudeCliDelta(parsed);
+      if (directDelta) {
+        emitDelta(directDelta);
+        return;
+      }
+
+      const snapshotText = this.extractClaudeCliSnapshotText(parsed);
+      if (!snapshotText || snapshotText.length <= emittedText.length) {
+        return;
+      }
+
+      if (snapshotText.startsWith(emittedText)) {
+        emitDelta(snapshotText.slice(emittedText.length));
+        return;
+      }
+
+      // If the CLI re-emits a full snapshot we don't recognize, fall back to suffix-only.
+      let commonPrefix = 0;
+      while (
+        commonPrefix < emittedText.length &&
+        commonPrefix < snapshotText.length &&
+        emittedText[commonPrefix] === snapshotText[commonPrefix]
+      ) {
+        commonPrefix += 1;
+      }
+      emitDelta(snapshotText.slice(commonPrefix));
+    };
+
+    try {
+      const child = spawn(cliCommand, args, {
+        cwd: process.env.ANTHROPIC_CLAUDE_CLI_CWD || '/tmp',
+        env: {
+          ...process.env,
+          ...(this.apiKey ? { ANTHROPIC_API_KEY: this.apiKey } : {})
+        },
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+
+      child.stdout.on('data', (chunk: Buffer | string) => {
+        stdoutBuffer += chunk.toString();
+        const lines = stdoutBuffer.split(/\r?\n/);
+        stdoutBuffer = lines.pop() || '';
+        for (const line of lines) {
+          processOutputLine(line);
+        }
+      });
+
+      child.stderr.on('data', (chunk: Buffer | string) => {
+        stderrBuffer += chunk.toString();
+      });
+
+      const exitCode = await new Promise<number>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', code => resolve(code ?? 0));
+      });
+
+      if (stdoutBuffer.trim()) {
+        processOutputLine(stdoutBuffer);
+      }
+
+      await streamChain;
+
+      if (exitCode !== 0) {
+        throw new Error(
+          stderrBuffer.trim() || `Claude CLI exited with status ${exitCode}`
+        );
+      }
+
+      const contentBlocks = this.parseThinkingTags(emittedText);
+      await onChunk('', true, contentBlocks.length > 0 ? contentBlocks : undefined);
+
+      await llmLogger.logResponse({
+        requestId,
+        service: 'anthropic',
+        model: cliModelId,
+        chunks,
+        duration: Date.now() - startTime
+      });
+
+      return { rawRequest };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      await llmLogger.logResponse({
+        requestId,
+        service: 'anthropic',
+        model: cliModelId,
+        error: errorMessage,
+        duration: Date.now() - startTime
+      });
+
+      try {
+        const estimatedInputTokens = Math.ceil(prompt.length / 4);
+        await onChunk('', true, undefined, {
+          inputTokens: estimatedInputTokens,
+          outputTokens: 0,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          failed: true,
+          error: errorMessage
+        });
+      } catch (metricsError) {
+        console.error('[Anthropic CLI] Failed to record failure metrics:', metricsError);
+      }
+
+      throw error;
+    }
+  }
+
+  private buildClaudeCliPrompt(messages: Array<{ role: 'user' | 'assistant'; content: any }>): string {
+    if (messages.length === 0) {
+      return 'Respond as Claude.';
+    }
+
+    const lastMessage = messages[messages.length - 1];
+    const hasAssistantPrefill = lastMessage?.role === 'assistant';
+    const priorMessages = hasAssistantPrefill ? messages.slice(0, -1) : messages;
+
+    const conversation = priorMessages
+      .map(message => `${message.role === 'user' ? 'User' : 'Assistant'}:\n${this.serializeClaudeCliContent(message.content)}`)
+      .join('\n\n');
+
+    if (hasAssistantPrefill) {
+      const assistantPrefix = this.serializeClaudeCliContent(lastMessage.content);
+      return `${conversation}\n\nAssistant has already started replying with:\n${assistantPrefix}\n\nContinue the assistant response from exactly after that existing text. Output only the continuation.`;
+    }
+
+    return `${conversation}\n\nRespond as the assistant. Output only the next assistant message.`;
+  }
+
+  private serializeClaudeCliContent(content: any): string {
+    if (typeof content === 'string') {
+      return content;
+    }
+
+    if (!Array.isArray(content)) {
+      return String(content ?? '');
+    }
+
+    return content.map((block: any) => {
+      if (block.type === 'text') {
+        return block.text || '';
+      }
+
+      if (block.type === 'image' || block.type === 'document') {
+        throw new Error('Claude CLI transport does not yet support image or PDF attachments.');
+      }
+
+      return '';
+    }).join('\n');
+  }
+
+  private mapModelIdToClaudeCli(modelId: string): string {
+    const normalized = modelId
+      .replace(/^anthropic\//, '')
+      .replace(/^us\.anthropic\./, '')
+      .replace(/^anthropic\./, '')
+      .replace(/-v\d+:\d+$/, '');
+
+    const aliases: Record<string, string> = {
+      'claude-opus-4-20250514': 'claude-opus-4',
+      'claude-opus-4-1-20250805': 'claude-opus-4.1',
+      'claude-opus-4-5-20251101': 'claude-opus-4.5',
+      'claude-sonnet-4-20250514': 'claude-sonnet-4',
+      'claude-sonnet-4-5-20250929': 'claude-sonnet-4.5',
+      'claude-haiku-4-5-20251001': 'claude-haiku-4.5',
+      'claude-3-7-sonnet-20250219': 'claude-3.7-sonnet',
+      'claude-3-5-sonnet-20241022': 'claude-3.5-sonnet',
+      'claude-3-5-sonnet-20240620': 'claude-3.5-sonnet',
+      'claude-3-5-haiku-20241022': 'claude-3.5-haiku',
+      'claude-3-opus-20240229': 'claude-3-opus',
+      'claude-3-sonnet-20240229': 'claude-3-sonnet',
+      'claude-3-haiku-20240307': 'claude-3-haiku'
+    };
+
+    return aliases[normalized] || normalized;
+  }
+
+  private extractClaudeCliDelta(parsed: any): string | undefined {
+    const event = parsed?.event || parsed;
+
+    if (event?.type === 'content_block_delta') {
+      if (typeof event.delta?.text === 'string') {
+        return event.delta.text;
+      }
+      if (typeof event.delta?.partial_message === 'string') {
+        return event.delta.partial_message;
+      }
+    }
+
+    if (typeof parsed?.delta === 'string') {
+      return parsed.delta;
+    }
+
+    return undefined;
+  }
+
+  private extractClaudeCliSnapshotText(parsed: any): string | undefined {
+    return this.extractClaudeCliTextValue(parsed?.message)
+      || this.extractClaudeCliTextValue(parsed?.result_message)
+      || this.extractClaudeCliTextValue(parsed?.result?.message)
+      || this.extractClaudeCliTextValue(parsed?.content)
+      || this.extractClaudeCliTextValue(parsed);
+  }
+
+  private extractClaudeCliTextValue(value: any): string | undefined {
+    if (!value) return undefined;
+    if (typeof value === 'string') return value;
+    if (typeof value?.text === 'string') return value.text;
+    if (typeof value?.content === 'string') return value.content;
+
+    const content = Array.isArray(value?.content)
+      ? value.content
+      : Array.isArray(value?.message?.content)
+        ? value.message.content
+        : undefined;
+
+    if (!content) {
+      return undefined;
+    }
+
+    const text = content
+      .map((block: any) => block?.text || '')
+      .join('');
+
+    return text || undefined;
+  }
+
   // Demo mode simulation
   private async simulateStreamingResponse(
     messages: Message[],
@@ -805,6 +1115,25 @@ export class AnthropicService {
 
   // Method to validate API keys
   async validateApiKey(apiKey: string): Promise<boolean> {
+    if (this.transport === 'claude-cli') {
+      try {
+        const cliCommand = process.env.ANTHROPIC_CLAUDE_CLI_PATH || 'claude';
+        const exitCode = await new Promise<number>((resolve, reject) => {
+          const child = spawn(cliCommand, ['--version'], {
+            cwd: process.env.ANTHROPIC_CLAUDE_CLI_CWD || '/tmp',
+            stdio: ['ignore', 'ignore', 'pipe']
+          });
+          child.once('error', reject);
+          child.once('close', code => resolve(code ?? 0));
+        });
+
+        return exitCode === 0;
+      } catch (error) {
+        console.error('Claude CLI validation error:', error);
+        return false;
+      }
+    }
+
     try {
       const testClient = new Anthropic({ apiKey });
       

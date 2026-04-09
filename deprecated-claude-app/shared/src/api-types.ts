@@ -12,7 +12,8 @@ export const BaseApiKeySchema = z.object({
 
 // Provider-specific credential schemas
 export const AnthropicCredentialsSchema = z.object({
-  apiKey: z.string()
+  apiKey: z.string().optional(),
+  transport: z.enum(['api', 'claude-cli']).optional()
 });
 
 export const BedrockCredentialsSchema = z.object({
@@ -29,7 +30,8 @@ export const OpenRouterCredentialsSchema = z.object({
 export const OpenAICompatibleCredentialsSchema = z.object({
   apiKey: z.string(),
   baseUrl: z.string().url(),
-  modelPrefix: z.string().optional() // Some providers prefix their models
+  modelPrefix: z.string().optional(), // Some providers prefix their models
+  apiMode: z.enum(['auto', 'chat-completions', 'responses']).optional()
 });
 
 // Combined API key schema with provider-specific credentials

@@ -43,8 +43,9 @@ export interface ApiKeyProfile {
 export interface AnthropicProfile extends ApiKeyProfile {
   provider: 'anthropic';
   credentials: {
-    apiKey: string;
+    apiKey?: string;
     baseUrl?: string; // For custom endpoints
+    transport?: 'api' | 'claude-cli';
   };
 }
 
@@ -73,6 +74,7 @@ export interface OpenAICompatibleProfile extends ApiKeyProfile {
     apiKey: string;
     baseUrl: string;
     modelPrefix?: string;
+    apiMode?: 'auto' | 'chat-completions' | 'responses';
   };
 }
 

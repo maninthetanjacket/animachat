@@ -107,7 +107,8 @@ export class InferenceService {
           this.db,
           'dummy-key',
           'http://localhost:11434',
-          undefined
+          undefined,
+          'auto'
         );
         apiMessages = openAIService.formatMessagesForOpenAI(formattedMessages, systemPrompt);
         apiSystemPrompt = undefined; // System prompt is included in messages for OpenAI
@@ -588,7 +589,8 @@ export class InferenceService {
       }
       const anthropicService = new AnthropicService(
         this.db, 
-        selectedKey.credentials.apiKey
+        selectedKey.credentials.apiKey,
+        { transport: selectedKey.credentials.transport || 'api' }
       );
       
       usageResult = await anthropicService.streamCompletion(
@@ -656,6 +658,9 @@ export class InferenceService {
       const modelPrefix = isCustomModel
         ? undefined
         : selectedKey?.credentials.modelPrefix;
+      const apiMode = isCustomModel
+        ? ((model as any).customEndpoint.apiMode || 'auto')
+        : (selectedKey?.credentials.apiMode || 'auto');
       
       console.log(`[InferenceService] OpenAI-compatible model config: isCustomModel=${isCustomModel}, baseUrl=${baseUrl}`);
       
@@ -663,7 +668,8 @@ export class InferenceService {
         this.db,
         apiKey,
         baseUrl,
-        modelPrefix
+        modelPrefix,
+        apiMode
       );
       
       usageResult = await openAIService.streamCompletion(

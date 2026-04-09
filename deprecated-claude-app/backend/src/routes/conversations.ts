@@ -106,6 +106,15 @@ const CreatePostHocOperationSchema = z.object({
   parentBranchId: z.string().uuid().optional(), // Parent branch for proper tree integration
 });
 
+const CreateManualMessageSchema = z.object({
+  role: z.enum(['user', 'assistant']).default('assistant'),
+  content: z.string().min(1),
+  parentBranchId: z.string().uuid().optional(),
+  participantId: z.string().uuid().optional(),
+  model: z.string().optional(),
+  hiddenFromAi: z.boolean().optional(),
+});
+
 export function conversationRouter(db: Database): Router {
   const router = Router();
 
@@ -515,6 +524,71 @@ export function conversationRouter(db: Database): Router {
         return res.status(400).json({ error: 'Invalid input', details: error.errors });
       }
       console.error('Import conversation error:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  // Append a manual message without triggering model generation.
+  // Useful for scripted conversation shaping where a human wants to inject
+  // a user or assistant turn directly into the transcript.
+  router.post('/:id/manual-message', async (req: AuthRequest, res) => {
+    try {
+      if (!req.userId) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      const data = CreateManualMessageSchema.parse(req.body);
+
+      const canChat = await db.canUserChatInConversation(req.params.id, req.userId);
+      if (!canChat) {
+        return res.status(403).json({ error: 'You do not have permission to add messages to this conversation' });
+      }
+
+      const conversation = await db.getConversation(req.params.id, req.userId);
+      if (!conversation) {
+        return res.status(404).json({ error: 'Conversation not found' });
+      }
+
+      const participants = await db.getConversationParticipants(req.params.id, conversation.userId);
+      const defaultParticipant = data.role === 'assistant'
+        ? participants.find(p => p.type === 'assistant')
+        : participants.find(p => p.type === 'user');
+
+      const participantId = data.participantId || defaultParticipant?.id;
+      if (!participantId) {
+        return res.status(400).json({ error: `No default ${data.role} participant found` });
+      }
+
+      const model = data.role === 'assistant'
+        ? (data.model || defaultParticipant?.model || conversation.model)
+        : data.model;
+
+      const message = await db.createMessage(
+        req.params.id,
+        conversation.userId,
+        data.content,
+        data.role,
+        model,
+        data.parentBranchId,
+        participantId,
+        undefined, // attachments
+        req.userId,
+        data.hiddenFromAi,
+        'human_edit'
+      );
+
+      roomManager.broadcastToRoom(req.params.id, {
+        type: 'message_created',
+        message,
+        fromUserId: req.userId
+      });
+
+      res.json(message);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: 'Invalid input', details: error.errors });
+      }
+      console.error('Manual message creation error:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
   });

@@ -112,9 +112,13 @@ export class ApiKeyManager {
     switch (provider) {
       case 'anthropic':
         const anthropicKey = process.env.ANTHROPIC_API_KEY;
-        return anthropicKey ? {
+        const anthropicTransport = process.env.ANTHROPIC_TRANSPORT === 'claude-cli' ? 'claude-cli' : 'api';
+        return (anthropicKey || anthropicTransport === 'claude-cli') ? {
           source: 'config',
-          credentials: { apiKey: anthropicKey }
+          credentials: {
+            ...(anthropicKey ? { apiKey: anthropicKey } : {}),
+            transport: anthropicTransport
+          }
         } : null;
 
       case 'bedrock':
@@ -144,7 +148,8 @@ export class ApiKeyManager {
           source: 'config',
           credentials: {
             apiKey: openaiKey,
-            baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'
+            baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+            apiMode: 'responses'
           }
         } : null;
 

@@ -141,6 +141,16 @@
         placeholder="Leave empty if not required"
         class="mb-2"
       />
+      <v-select
+        v-model="customEndpointData.apiMode"
+        :items="openAICompatibleApiModes"
+        label="API Type"
+        variant="outlined"
+        density="compact"
+        class="mb-2"
+        hint="Use Responses for OpenAI, Chat Completions for Ollama/LM Studio/vLLM, or Auto to infer from the URL."
+        persistent-hint
+      />
     </template>
     
     <!-- Model Specifications -->
@@ -278,6 +288,11 @@ const providers = [
   { title: 'OpenRouter', value: 'openrouter' },
   { title: 'OpenAI-compatible', value: 'openai-compatible' }
 ];
+const openAICompatibleApiModes = [
+  { title: 'Auto Detect', value: 'auto' },
+  { title: 'Chat Completions', value: 'chat-completions' },
+  { title: 'Responses API', value: 'responses' }
+];
 
 const showDeleteDialog = ref(false);
 const editingModel = ref<UserDefinedModel | null>(null);
@@ -316,7 +331,8 @@ const formData = ref({
 
 const customEndpointData = ref({
   baseUrl: '',
-  apiKey: ''
+  apiKey: '',
+  apiMode: 'auto' as 'auto' | 'chat-completions' | 'responses'
 });
 
 const isFormValid = computed(() => {
@@ -379,7 +395,8 @@ function openEditDialog(model: UserDefinedModel) {
   if (model.customEndpoint) {
     customEndpointData.value = {
       baseUrl: model.customEndpoint.baseUrl,
-      apiKey: model.customEndpoint.apiKey || ''
+      apiKey: model.customEndpoint.apiKey || '',
+      apiMode: model.customEndpoint.apiMode || 'auto'
     };
   }
 }
@@ -413,7 +430,8 @@ function resetForm() {
   
   customEndpointData.value = {
     baseUrl: '',
-    apiKey: ''
+    apiKey: '',
+    apiMode: 'auto'
   };
   
   selectedORModel.value = null;
@@ -480,7 +498,8 @@ async function saveModel() {
       customEndpoint: selectedProvider.value === 'openai-compatible' 
         ? {
             baseUrl: customEndpointData.value.baseUrl,
-            apiKey: customEndpointData.value.apiKey || undefined
+            apiKey: customEndpointData.value.apiKey || undefined,
+            apiMode: customEndpointData.value.apiMode || 'auto'
           }
         : undefined
     };

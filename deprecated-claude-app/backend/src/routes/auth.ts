@@ -402,7 +402,9 @@ export function authRouter(db: Database): Router {
 
       // Create masked version for display
       let masked = '****';
-      if ('apiKey' in credentials) {
+      if (credentials.transport === 'claude-cli') {
+        masked = 'Claude CLI';
+      } else if ('apiKey' in credentials && credentials.apiKey) {
         masked = '****' + credentials.apiKey.slice(-4);
       } else if ('accessKeyId' in credentials) {
         masked = '****' + credentials.accessKeyId.slice(-4);
@@ -432,7 +434,9 @@ export function authRouter(db: Database): Router {
       res.json(apiKeys.map(key => {
         // Create masked version for display
         let masked = '****';
-        if ('apiKey' in key.credentials) {
+        if ((key.credentials as any).transport === 'claude-cli') {
+          masked = 'Claude CLI';
+        } else if ('apiKey' in key.credentials && (key.credentials as any).apiKey) {
           masked = '****' + (key.credentials.apiKey as string).slice(-4);
         } else if ('accessKeyId' in key.credentials) {
           masked = '****' + (key.credentials.accessKeyId as string).slice(-4);

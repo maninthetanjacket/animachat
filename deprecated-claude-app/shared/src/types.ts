@@ -307,7 +307,8 @@ export const UserDefinedModelSchema = z.object({
   // Custom endpoint settings (for openai-compatible only)
   customEndpoint: z.object({
     baseUrl: z.string().url(),
-    apiKey: z.string().optional()
+    apiKey: z.string().optional(),
+    apiMode: z.enum(['auto', 'chat-completions', 'responses']).optional()
   }).optional()
 });
 
@@ -327,7 +328,8 @@ export const CreateUserModelSchema = z.object({
   settings: ModelSettingsSchema.optional(),
   customEndpoint: z.object({
     baseUrl: z.string().url(),
-    apiKey: z.string().optional()
+    apiKey: z.string().optional(),
+    apiMode: z.enum(['auto', 'chat-completions', 'responses']).optional()
   }).optional()
 });
 
