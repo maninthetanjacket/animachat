@@ -1,3 +1,4 @@
+import './load-env.js';
 import express from 'express';
 import compression from 'compression';
 import { clearOpenRouterLog } from './utils/openrouterLogger.js';
@@ -10,7 +11,6 @@ import { createServer as createHttpServer } from 'http';
 import { createServer as createHttpsServer } from 'https';
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
-import dotenv from 'dotenv';
 import { authRouter } from './routes/auth.js';
 import { conversationRouter } from './routes/conversations.js';
 import { modelRouter } from './routes/models.js';
@@ -33,13 +33,12 @@ import siteConfigRouter from './routes/site-config.js';
 import { websocketHandler } from './websocket/handler.js';
 import { Database } from './database/index.js';
 import { initBlobStore } from './database/blob-store.js';
-import { authenticateToken } from './middleware/auth.js';
+import { authenticateToken, assertJwtSecretConfigured } from './middleware/auth.js';
 import { OpenRouterService } from './services/openrouter.js';
 import { updateOpenRouterModelsCache, setOpenRouterRefreshCallback } from './services/pricing-cache.js';
 
-dotenv.config();
-
 const app = express();
+assertJwtSecretConfigured();
 
 // Initialize database
 const db = new Database();

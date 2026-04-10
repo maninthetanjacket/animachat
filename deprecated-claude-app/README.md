@@ -39,7 +39,7 @@ npm install
 2. **Configure backend environment:**
 ```bash
 cd backend
-cp .env.example .env
+cp env.example .env
 # Edit .env with your configuration
 ```
 
