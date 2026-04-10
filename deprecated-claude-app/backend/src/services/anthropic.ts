@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { Message, getActiveBranch, ModelSettings } from '@deprecated-claude/shared';
 import { Database } from '../database/index.js';
 import { llmLogger } from '../utils/llmLogger.js';
@@ -8,8 +9,22 @@ import sharp from 'sharp';
 // Anthropic's image size limit is 5MB, we target 4MB to have margin
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 type AnthropicTransport = 'api' | 'claude-cli';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+interface ClaudeCliMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+interface ClaudeCliSessionState {
+  sessionId: string;
+  model: string;
+  systemPrompt?: string;
+  messages: ClaudeCliMessage[];
+}
 
 export class AnthropicService {
+  private static claudeCliSessions = new Map<string, ClaudeCliSessionState>();
   private client: Anthropic;
   private db: Database;
   private apiKey?: string;
@@ -35,7 +50,9 @@ export class AnthropicService {
     systemPrompt: string | undefined,
     settings: ModelSettings,
     onChunk: (chunk: string, isComplete: boolean, contentBlocks?: any[], usage?: any) => Promise<void>,
-    stopSequences?: string[]
+    stopSequences?: string[],
+    conversationId?: string,
+    responderId?: string
   ): Promise<{
     usage?: {
       inputTokens: number;
@@ -56,7 +73,9 @@ export class AnthropicService {
         modelId,
         messages,
         systemPrompt,
-        onChunk
+        onChunk,
+        conversationId,
+        responderId
       );
     }
 
@@ -775,20 +794,65 @@ export class AnthropicService {
     modelId: string,
     messages: Message[],
     systemPrompt: string | undefined,
-    onChunk: (chunk: string, isComplete: boolean, contentBlocks?: any[], usage?: any) => Promise<void>
+    onChunk: (chunk: string, isComplete: boolean, contentBlocks?: any[], usage?: any) => Promise<void>,
+    conversationId?: string,
+    responderId?: string
   ): Promise<{ rawRequest?: any }> {
     const anthropicMessages = await this.formatMessagesForAnthropic(messages);
     const cliModelId = this.mapModelIdToClaudeCli(modelId);
-    const prompt = this.buildClaudeCliPrompt(anthropicMessages);
+    const currentCliMessages = this.normalizeClaudeCliMessages(anthropicMessages);
+    const effectiveSystemPrompt = systemPrompt?.trim() ? systemPrompt : undefined;
+    const sessionKey = this.getClaudeCliSessionKey(conversationId, responderId);
+    let sessionState = sessionKey ? AnthropicService.claudeCliSessions.get(sessionKey) : undefined;
+    let syncStatus: 'stateless' | 'delta' | 'reset' | 'full';
+    let syncReason: string | undefined;
+
+    if (sessionState) {
+      if (sessionState.model !== cliModelId) {
+        syncStatus = 'reset';
+        syncReason = 'model changed';
+      } else if ((sessionState.systemPrompt || undefined) !== effectiveSystemPrompt) {
+        syncStatus = 'reset';
+        syncReason = 'system prompt changed';
+      } else {
+        const syncCheck = this.compareClaudeCliMessages(sessionState.messages, currentCliMessages);
+        if (syncCheck.inSync) {
+          if (currentCliMessages.length === sessionState.messages.length) {
+            syncStatus = 'reset';
+            syncReason = 'no new turns to send';
+          } else {
+            syncStatus = 'delta';
+          }
+        } else {
+          syncStatus = 'reset';
+          syncReason = syncCheck.reason;
+        }
+      }
+
+      if (syncStatus === 'reset') {
+        console.warn(`[Anthropic CLI] Resetting Claude session for ${sessionKey}: ${syncReason}`);
+        AnthropicService.claudeCliSessions.delete(sessionKey);
+        sessionState = undefined;
+      }
+    }
+
+    const sessionId = sessionState?.sessionId || (sessionKey ? randomUUID() : undefined);
+    const promptMessages = sessionState
+      ? currentCliMessages.slice(sessionState.messages.length)
+      : currentCliMessages;
+    const prompt = this.buildClaudeCliPromptFromSerialized(promptMessages);
     const cliCommand = process.env.ANTHROPIC_CLAUDE_CLI_PATH || 'claude';
     const requestId = `anthropic-cli-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const startTime = Date.now();
 
+    if (!sessionKey) {
+      syncStatus = 'stateless';
+    } else if (!sessionState) {
+      syncStatus = syncStatus ?? 'full';
+    }
+
     const args = [
       '-p',
-      prompt,
-      '--model',
-      cliModelId,
       '--output-format',
       'stream-json',
       '--verbose',
@@ -797,22 +861,44 @@ export class AnthropicService {
       'bypassPermissions',
       '--tools',
       '',
-      '--no-session-persistence',
       '--setting-sources',
       'user'
     ];
 
-    if (systemPrompt) {
-      args.push('--system-prompt', systemPrompt);
+    if (sessionId) {
+      if (sessionState) {
+        args.push('--resume', sessionId);
+      } else {
+        args.push('--session-id', sessionId);
+      }
+    } else {
+      args.push('--no-session-persistence');
+    }
+
+    if (!sessionState) {
+      args.push('--model', cliModelId);
+    }
+
+    if (effectiveSystemPrompt) {
+      args.push('--system-prompt', effectiveSystemPrompt);
     }
 
     const rawRequest = {
       transport: 'claude-cli',
       command: cliCommand,
       model: cliModelId,
-      system: systemPrompt,
+      sessionKey,
+      sessionId,
+      resumeSession: !!sessionState,
+      sessionPersistence: sessionId ? 'persistent' : 'disabled',
+      syncStatus,
+      syncReason,
+      promptMessageCount: promptMessages.length,
+      totalMessageCount: currentCliMessages.length,
+      system: effectiveSystemPrompt,
       prompt,
-      args: args.filter(arg => arg !== prompt)
+      args,
+      stdin: prompt
     };
 
     await llmLogger.logRequest({
@@ -883,8 +969,10 @@ export class AnthropicService {
           ...process.env,
           ...(this.apiKey ? { ANTHROPIC_API_KEY: this.apiKey } : {})
         },
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe']
       });
+
+      child.stdin.end(prompt);
 
       child.stdout.on('data', (chunk: Buffer | string) => {
         stdoutBuffer += chunk.toString();
@@ -927,9 +1015,22 @@ export class AnthropicService {
         duration: Date.now() - startTime
       });
 
+      if (sessionKey && sessionId) {
+        AnthropicService.claudeCliSessions.set(sessionKey, {
+          sessionId,
+          model: cliModelId,
+          systemPrompt: effectiveSystemPrompt,
+          messages: this.finalizeClaudeCliMessages(currentCliMessages, emittedText)
+        });
+      }
+
       return { rawRequest };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+
+      if (sessionKey) {
+        AnthropicService.claudeCliSessions.delete(sessionKey);
+      }
 
       await llmLogger.logResponse({
         requestId,
@@ -958,6 +1059,15 @@ export class AnthropicService {
   }
 
   private buildClaudeCliPrompt(messages: Array<{ role: 'user' | 'assistant'; content: any }>): string {
+    return this.buildClaudeCliPromptFromSerialized(
+      messages.map(message => ({
+        role: message.role,
+        content: this.serializeClaudeCliContent(message.content)
+      }))
+    );
+  }
+
+  private buildClaudeCliPromptFromSerialized(messages: ClaudeCliMessage[]): string {
     if (messages.length === 0) {
       return 'Respond as Claude.';
     }
@@ -967,15 +1077,109 @@ export class AnthropicService {
     const priorMessages = hasAssistantPrefill ? messages.slice(0, -1) : messages;
 
     const conversation = priorMessages
-      .map(message => `${message.role === 'user' ? 'User' : 'Assistant'}:\n${this.serializeClaudeCliContent(message.content)}`)
+      .map(message => `${message.role === 'user' ? 'User' : 'Assistant'}:\n${message.content}`)
       .join('\n\n');
 
     if (hasAssistantPrefill) {
-      const assistantPrefix = this.serializeClaudeCliContent(lastMessage.content);
-      return `${conversation}\n\nAssistant has already started replying with:\n${assistantPrefix}\n\nContinue the assistant response from exactly after that existing text. Output only the continuation.`;
+      const assistantPrefix = lastMessage.content;
+      const prefixIntro = conversation
+        ? `${conversation}\n\nAssistant has already started replying with:\n${assistantPrefix}`
+        : `Assistant has already started replying with:\n${assistantPrefix}`;
+      return `${prefixIntro}\n\nContinue the assistant response from exactly after that existing text. Output only the continuation.`;
     }
 
     return `${conversation}\n\nRespond as the assistant. Output only the next assistant message.`;
+  }
+
+  private getClaudeCliSessionKey(conversationId?: string, responderId?: string): string | undefined {
+    if (!conversationId) {
+      return undefined;
+    }
+
+    const responderKey = responderId || 'default';
+    if (!UUID_PATTERN.test(conversationId)) {
+      console.warn(`[Anthropic CLI] Conversation ID "${conversationId}" is not a valid UUID; session reuse may be less predictable`);
+    }
+    return `${conversationId}:${responderKey}`;
+  }
+
+  private normalizeClaudeCliMessages(messages: Array<{ role: 'user' | 'assistant'; content: any }>): ClaudeCliMessage[] {
+    return messages.map(message => ({
+      role: message.role,
+      content: this.normalizeClaudeCliContent(
+        this.serializeClaudeCliContent(message.content),
+        message.role
+      )
+    }));
+  }
+
+  private compareClaudeCliMessages(expected: ClaudeCliMessage[], actual: ClaudeCliMessage[]): { inSync: boolean; reason?: string } {
+    if (expected.length > actual.length) {
+      return {
+        inSync: false,
+        reason: `turn count regressed (Claude=${expected.length}, Arc=${actual.length})`
+      };
+    }
+
+    for (let index = 0; index < expected.length; index += 1) {
+      const expectedMessage = expected[index];
+      const actualMessage = actual[index];
+
+      if (!actualMessage) {
+        return {
+          inSync: false,
+          reason: `missing Arc turn ${index + 1}`
+        };
+      }
+
+      if (expectedMessage.role !== actualMessage.role) {
+        return {
+          inSync: false,
+          reason: `role mismatch at turn ${index + 1} (Claude=${expectedMessage.role}, Arc=${actualMessage.role})`
+        };
+      }
+
+      if (expectedMessage.content !== actualMessage.content) {
+        return {
+          inSync: false,
+          reason: `content mismatch at turn ${index + 1}`
+        };
+      }
+    }
+
+    return { inSync: true };
+  }
+
+  private finalizeClaudeCliMessages(messages: ClaudeCliMessage[], emittedText: string): ClaudeCliMessage[] {
+    const finalized = messages.map(message => ({ ...message }));
+    const normalizedEmittedText = this.normalizeClaudeCliContent(emittedText, 'assistant');
+
+    if (!normalizedEmittedText) {
+      return finalized;
+    }
+
+    const lastMessage = finalized[finalized.length - 1];
+    if (lastMessage?.role === 'assistant') {
+      lastMessage.content = this.normalizeClaudeCliContent(lastMessage.content + normalizedEmittedText, 'assistant');
+      return finalized;
+    }
+
+    finalized.push({
+      role: 'assistant',
+      content: normalizedEmittedText
+    });
+
+    return finalized;
+  }
+
+  private normalizeClaudeCliContent(content: string, role: 'user' | 'assistant'): string {
+    const normalized = content.replace(/\r\n/g, '\n');
+
+    if (role === 'assistant') {
+      return normalized.replace(/^\n+/, '');
+    }
+
+    return normalized;
   }
 
   private serializeClaudeCliContent(content: any): string {

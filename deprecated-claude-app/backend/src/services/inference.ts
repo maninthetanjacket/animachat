@@ -599,7 +599,9 @@ export class InferenceService {
         effectiveSystemPrompt,
         effectiveSettings,
         finalOnChunk,
-        stopSequences
+        stopSequences,
+        conversation?.id,
+        responderId
       );
     } else if (model.provider === 'bedrock') {
       if (!selectedKey) {
