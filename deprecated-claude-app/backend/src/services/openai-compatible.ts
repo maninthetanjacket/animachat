@@ -40,7 +40,7 @@ export class OpenAICompatibleService {
       // Apply model prefix if configured
       const actualModelId = this.modelPrefix ? `${this.modelPrefix}${modelId}` : modelId;
       
-      const requestBody = {
+      const requestBody: any = {
         model: actualModelId,
         messages: openAIMessages,
         stream: true,
@@ -48,12 +48,14 @@ export class OpenAICompatibleService {
         max_tokens: settings.maxTokens,
         ...(settings.topP !== undefined && { top_p: settings.topP }),
         ...(settings.topK !== undefined && { top_k: settings.topK }),
-        ...(stopSequences && stopSequences.length > 0 && { stop: stopSequences }),
-        // OpenAI reasoning_effort (low/medium/high) for reasoning models
-        ...(settings.modelSpecific?.reasoningEffort && {
-          reasoning_effort: settings.modelSpecific.reasoningEffort
-        })
+        ...(stopSequences && stopSequences.length > 0 && { stop: stopSequences })
       };
+
+      // OpenAI reasoning_effort (low/medium/high) for reasoning models
+      const reasoningEffort = settings.modelSpecific?.reasoningEffort;
+      if (typeof reasoningEffort === 'string') {
+        requestBody.reasoning_effort = reasoningEffort;
+      }
 
       // Log the request
       await llmLogger.logRequest({

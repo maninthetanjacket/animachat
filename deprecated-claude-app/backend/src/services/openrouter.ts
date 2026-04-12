@@ -234,13 +234,14 @@ export class OpenRouterService {
           reasoning: {
             max_tokens: settings.thinking.budgetTokens
           }
-        }),
-
-        // OpenAI reasoning_effort (low/medium/high) for reasoning models like GPT-5.4
-        ...(settings.modelSpecific?.reasoningEffort && {
-          reasoning_effort: settings.modelSpecific.reasoningEffort
         })
       };
+
+      // OpenAI reasoning_effort (low/medium/high) for reasoning models like GPT-5.4
+      const reasoningEffort = settings.modelSpecific?.reasoningEffort;
+      if (typeof reasoningEffort === 'string') {
+        requestBody.reasoning_effort = reasoningEffort;
+      }
       
       // For Anthropic models: force native provider and enable caching
       if (provider === 'anthropic') {
