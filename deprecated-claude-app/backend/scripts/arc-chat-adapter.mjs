@@ -34,6 +34,7 @@ function usage() {
   node scripts/arc-chat-adapter.mjs post-message --conversation-id <id> --participant "CC-1" --content "Hello"
   node scripts/arc-chat-adapter.mjs wait-message --conversation-id <id> --from "CC-2" --after-message-id <id>
   node scripts/arc-chat-adapter.mjs last-message --conversation-id <id> [--from "CC-2"]
+  node scripts/arc-chat-adapter.mjs get-messages --conversation-id <id> [--from "CC-2"]
   node scripts/arc-chat-adapter.mjs append-assistant --conversation-id <id> --content-file stone.txt
   node scripts/arc-chat-adapter.mjs stone --stone-file stone.txt [--territory "..."] [--prompt "..."]
 
@@ -255,6 +256,18 @@ function printResult(result, jsonMode) {
     }
     console.log('');
     console.log(result.content);
+    return;
+  }
+
+  if (result.mode === 'get-messages') {
+    console.log(`Conversation: ${result.conversationId}`);
+    console.log(`URL: ${result.conversationUrl}`);
+    console.log(`Messages: ${result.messages.length}`);
+    for (const message of result.messages) {
+      console.log('');
+      console.log(`- ${message.messageId} [${message.role}]${message.participantName ? ` ${message.participantName}` : ''}`);
+      console.log(message.content);
+    }
     return;
   }
 
@@ -503,6 +516,30 @@ class ArcChatClient {
     }
 
     return null;
+  }
+
+  findMessages(messages, {
+    afterMessageId,
+    role,
+    participantId,
+    excludeParticipantId
+  } = {}) {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return [];
+    }
+
+    let startIndex = 0;
+    if (afterMessageId) {
+      const boundaryIndex = messages.findIndex((message) => message.id === afterMessageId);
+      if (boundaryIndex === -1) {
+        throw new Error(`Message "${afterMessageId}" not found in conversation.`);
+      }
+      startIndex = boundaryIndex + 1;
+    }
+
+    return messages
+      .slice(startIndex)
+      .filter((message) => this.messageMatches(message, { role, participantId, excludeParticipantId }));
   }
 
   messageMatches(message, {
@@ -1336,6 +1373,56 @@ async function runLastMessageCommand(client, args) {
   };
 }
 
+async function runGetMessagesCommand(client, args) {
+  const conversationId = args['conversation-id'];
+  if (!conversationId) {
+    throw new Error('get-messages requires --conversation-id.');
+  }
+
+  const role = args.role;
+  if (role !== undefined && role !== 'assistant' && role !== 'user') {
+    throw new Error('get-messages --role must be "assistant" or "user" when provided.');
+  }
+
+  const participant = await resolveMessageParticipant(client, conversationId, args, {
+    role,
+    selectorKeys: ['from', 'participant']
+  });
+
+  const excludeParticipant = args['exclude-participant']
+    ? await resolveParticipant(client, conversationId, args['exclude-participant'])
+    : undefined;
+
+  const messages = await client.getMessages(conversationId);
+  const matchedMessages = client.findMessages(messages, {
+    afterMessageId: args['after-message-id'],
+    role,
+    participantId: participant?.id || args['participant-id'],
+    excludeParticipantId: excludeParticipant?.id || args['exclude-participant-id']
+  });
+
+  const participants = await client.getParticipants(conversationId);
+  const participantsById = new Map(participants.map((item) => [item.id, item]));
+
+  return {
+    mode: 'get-messages',
+    conversationId,
+    conversationUrl: conversationUrl(client.appUrl, conversationId),
+    messages: matchedMessages.map((message) => {
+      const branch = activeBranch(message);
+      const actualParticipant = branch?.participantId ? participantsById.get(branch.participantId) : undefined;
+      return {
+        role: branch?.role,
+        participantName: actualParticipant?.name,
+        participantId: branch?.participantId,
+        messageId: message.id,
+        branchId: branch?.id,
+        content: (branch?.content || '').trim()
+      };
+    })
+  };
+}
+
 async function runAppendAssistantCommand(client, args) {
   const conversationId = args['conversation-id'];
   if (!conversationId) {
@@ -1468,6 +1555,8 @@ async function main() {
     result = await runWaitMessageCommand(client, args);
   } else if (command === 'last-message') {
     result = await runLastMessageCommand(client, args);
+  } else if (command === 'get-messages') {
+    result = await runGetMessagesCommand(client, args);
   } else if (command === 'append-assistant') {
     result = await runAppendAssistantCommand(client, args);
   } else if (command === 'stone') {
