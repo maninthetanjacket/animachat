@@ -9,6 +9,7 @@ const DEFAULT_SERVER_URL = 'http://localhost:3010';
 const DEFAULT_APP_URL = 'http://localhost:5173';
 const DEFAULT_PROMPT = 'What do you find there?';
 const DEFAULT_MODEL = 'gpt-5.4';
+const CLAUDE_CLI_EFFORT_VALUES = new Set(['low', 'medium', 'high', 'max']);
 const AFFIRMATIVES = new Set([
   'yes',
   'accept',
@@ -28,9 +29,10 @@ function usage() {
   console.error(`Usage:
   node scripts/arc-chat-adapter.mjs chat --conversation-id <id> --message "Hello"
   node scripts/arc-chat-adapter.mjs chat --model <model> --title "My Chat" --message-file prompt.txt
+  node scripts/arc-chat-adapter.mjs chat --model claude-opus-4.6 --effort max --title "My Chat" --message-file prompt.txt
   node scripts/arc-chat-adapter.mjs create-group --title "CC Chat" --assistants "CC-1,CC-2" --model gpt-5.4
   node scripts/arc-chat-adapter.mjs participants --conversation-id <id>
-  node scripts/arc-chat-adapter.mjs add-assistant --conversation-id <id> --name "CC-3" --model gpt-5.4
+  node scripts/arc-chat-adapter.mjs add-assistant --conversation-id <id> --name "CC-3" --model claude-opus-4.6 --effort high
   node scripts/arc-chat-adapter.mjs post-message --conversation-id <id> --participant "CC-1" --content "Hello"
   node scripts/arc-chat-adapter.mjs wait-message --conversation-id <id> --from "CC-2" --after-message-id <id>
   node scripts/arc-chat-adapter.mjs last-message --conversation-id <id> [--from "CC-2"]
@@ -46,6 +48,10 @@ Common options:
   --server-url <url>   Arc Chat backend base URL (default: ${DEFAULT_SERVER_URL})
   --app-url <url>      Arc Chat frontend base URL (default: ${DEFAULT_APP_URL})
   --json               Emit JSON instead of human-readable text
+
+Model settings:
+  --effort <level>     Claude CLI effort for created conversation/assistant settings.
+                       Valid: low, medium, high, max. Intended for Claude Opus 4.6.
 `);
 }
 
@@ -182,6 +188,49 @@ async function readTextOption(args, valueKey, fileKey) {
   return null;
 }
 
+function normalizeClaudeCliEffort(value) {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (!CLAUDE_CLI_EFFORT_VALUES.has(normalized)) {
+    throw new Error(`Invalid --effort value "${value}". Expected one of: low, medium, high, max.`);
+  }
+
+  return normalized;
+}
+
+function getBranchContent(branch) {
+  return (branch?.content || '').trim();
+}
+
+function getBranchContentBlocks(branch) {
+  return Array.isArray(branch?.contentBlocks) && branch.contentBlocks.length > 0
+    ? branch.contentBlocks
+    : undefined;
+}
+
+function printMessageWithContentBlocks(content, contentBlocks) {
+  const thinkingBlocks = Array.isArray(contentBlocks)
+    ? contentBlocks.filter((block) => block?.type === 'thinking' || block?.type === 'redacted_thinking')
+    : [];
+
+  if (thinkingBlocks.length > 0) {
+    for (const [index, block] of thinkingBlocks.entries()) {
+      console.log(`Thinking ${index + 1}:`);
+      if (block.type === 'thinking') {
+        console.log(block.thinking || '');
+      } else {
+        console.log('[Redacted for safety]');
+      }
+      console.log('');
+    }
+  }
+
+  console.log(content);
+}
+
 function printResult(result, jsonMode) {
   if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));
@@ -195,7 +244,7 @@ function printResult(result, jsonMode) {
       console.log(`As: ${result.participantName || 'default'} -> ${result.responderName || 'default'}`);
     }
     console.log('');
-    console.log(result.responseText);
+    printMessageWithContentBlocks(result.responseText, result.contentBlocks);
     return;
   }
 
@@ -244,7 +293,7 @@ function printResult(result, jsonMode) {
       console.log(`From: ${result.participantName}`);
     }
     console.log('');
-    console.log(result.content);
+    printMessageWithContentBlocks(result.content, result.contentBlocks);
     return;
   }
 
@@ -255,7 +304,7 @@ function printResult(result, jsonMode) {
       console.log(`From: ${result.participantName}`);
     }
     console.log('');
-    console.log(result.content);
+    printMessageWithContentBlocks(result.content, result.contentBlocks);
     return;
   }
 
@@ -266,7 +315,7 @@ function printResult(result, jsonMode) {
     for (const message of result.messages) {
       console.log('');
       console.log(`- ${message.messageId} [${message.role}]${message.participantName ? ` ${message.participantName}` : ''}`);
-      console.log(message.content);
+      printMessageWithContentBlocks(message.content, message.contentBlocks);
     }
     return;
   }
@@ -286,11 +335,11 @@ function printResult(result, jsonMode) {
     console.log(`URL: ${result.conversationUrl}`);
     console.log('');
     console.log('Consent response:');
-    console.log(result.consentResponse);
+    printMessageWithContentBlocks(result.consentResponse, result.consentResponseContentBlocks);
     if (result.accepted) {
       console.log('');
       console.log('Stone response:');
-      console.log(result.stoneResponse);
+      printMessageWithContentBlocks(result.stoneResponse, result.stoneResponseContentBlocks);
     } else {
       console.log('');
       console.log('Consent was not clearly affirmative; stone was not sent.');
@@ -385,12 +434,13 @@ class ArcChatClient {
     return this.request('GET', '/models');
   }
 
-  async createConversation({ title, model, systemPrompt, format }) {
+  async createConversation({ title, model, systemPrompt, format, settings }) {
     return this.request('POST', '/conversations', {
       title,
       model,
       systemPrompt,
-      format
+      format,
+      ...(settings ? { settings } : {})
     });
   }
 
@@ -674,7 +724,8 @@ class ArcChatClient {
               branchId: branch?.id,
               role: branch?.role,
               participantId: branch?.participantId,
-              content: (branch?.content || '').trim()
+              content: getBranchContent(branch),
+              contentBlocks: getBranchContentBlocks(branch)
             });
           } catch (error) {
             finish(null, error);
@@ -698,7 +749,8 @@ class ArcChatClient {
             branchId: branch?.id,
             role: branch?.role,
             participantId: branch?.participantId,
-            content: (branch?.content || '').trim()
+            content: getBranchContent(branch),
+            contentBlocks: getBranchContentBlocks(branch)
           });
         } catch (error) {
           finish(null, error);
@@ -872,7 +924,8 @@ class ArcChatClient {
             userMessageId: chatMessageId,
             assistantMessageId,
             assistantBranchId,
-            responseText
+            responseText,
+            contentBlocks: getBranchContentBlocks(branch)
           });
         } catch (error) {
           finish(null, error);
@@ -937,14 +990,25 @@ async function resolveModelInfo(client, requestedModel) {
   return models[0];
 }
 
-function modelDefaultsFromInfo(modelInfo) {
+function isClaudeOpus46(modelInfo) {
+  return modelInfo?.provider === 'anthropic' && modelInfo?.providerModelId === 'claude-opus-4-6';
+}
+
+function modelDefaultsFromInfo(modelInfo, effort = undefined) {
   const settings = modelInfo?.settings || {};
-  return {
+  const defaults = {
     temperature: settings.temperature?.default ?? 1,
     maxTokens: settings.maxTokens?.default ?? modelInfo?.outputTokenLimit ?? 4096,
     ...(settings.topP?.default !== undefined ? { topP: settings.topP.default } : {}),
     ...(settings.topK?.default !== undefined ? { topK: settings.topK.default } : {})
   };
+
+  const resolvedEffort = effort ?? (isClaudeOpus46(modelInfo) ? 'medium' : undefined);
+  if (resolvedEffort) {
+    defaults.effort = resolvedEffort;
+  }
+
+  return defaults;
 }
 
 async function resolveParticipant(client, conversationId, selector, expectedType = undefined) {
@@ -1060,14 +1124,15 @@ async function resolveMessageParticipant(client, conversationId, args, {
   return undefined;
 }
 
-async function applyAssistantSpec(client, conversationId, participant, spec, fallbackModel) {
+async function applyAssistantSpec(client, conversationId, participant, spec, fallbackModel, defaultEffort = undefined) {
   const resolvedModelInfo = await resolveModelInfo(client, spec.model || fallbackModel || DEFAULT_MODEL);
   const systemPrompt = spec.systemPrompt ?? spec.instructions;
   const personaContext = spec.personaContext;
+  const effort = normalizeClaudeCliEffort(spec.effort ?? defaultEffort);
   const updates = {
     name: spec.name || participant.name,
     model: resolvedModelInfo.id,
-    settings: modelDefaultsFromInfo(resolvedModelInfo),
+    settings: modelDefaultsFromInfo(resolvedModelInfo, effort),
     ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     ...(personaContext !== undefined ? { personaContext } : {})
   };
@@ -1076,6 +1141,7 @@ async function applyAssistantSpec(client, conversationId, participant, spec, fal
 }
 
 async function runChatCommand(client, args) {
+  const effort = normalizeClaudeCliEffort(args.effort);
   const message =
     await readTextOption(args, 'message', 'message-file');
   if (!message) {
@@ -1092,7 +1158,8 @@ async function runChatCommand(client, args) {
       title: args.title || 'CC Adapter Conversation',
       model,
       systemPrompt: args['system-prompt'],
-      format
+      format,
+      settings: modelDefaultsFromInfo(await resolveModelInfo(client, model), effort)
     });
     conversationId = conversation.id;
   }
@@ -1125,12 +1192,14 @@ async function runChatCommand(client, args) {
     participantName: participant?.name,
     responderName: responder?.name,
     responseText: response.responseText,
+    contentBlocks: response.contentBlocks,
     assistantMessageId: response.assistantMessageId,
     assistantBranchId: response.assistantBranchId
   };
 }
 
 async function runCreateGroupCommand(client, args) {
+  const effort = normalizeClaudeCliEffort(args.effort);
   const assistantSpecs = await loadAssistantSpecs(args);
   if (assistantSpecs.length === 0) {
     throw new Error('create-group requires --assistants, --assistant, or --assistants-file.');
@@ -1145,7 +1214,8 @@ async function runCreateGroupCommand(client, args) {
     title: args.title || 'CC Group Chat',
     model: baseModelInfo.id,
     systemPrompt: args['system-prompt'],
-    format: 'prefill'
+    format: 'prefill',
+    settings: modelDefaultsFromInfo(baseModelInfo, effort)
   });
 
   const participants = await client.getParticipants(conversation.id);
@@ -1160,18 +1230,20 @@ async function runCreateGroupCommand(client, args) {
     conversation.id,
     defaultAssistant,
     assistantSpecs[0],
-    baseModelInfo.id
+    baseModelInfo.id,
+    effort
   );
   createdParticipants.push(updatedFirst);
 
   for (const spec of assistantSpecs.slice(1)) {
     const modelInfo = await resolveModelInfo(client, spec.model || args.model || DEFAULT_MODEL);
+    const assistantEffort = normalizeClaudeCliEffort(spec.effort ?? effort);
     const participant = await client.createParticipant({
       conversationId: conversation.id,
       name: spec.name,
       type: 'assistant',
       model: modelInfo.id,
-      settings: modelDefaultsFromInfo(modelInfo),
+      settings: modelDefaultsFromInfo(modelInfo, assistantEffort),
       ...(spec.systemPrompt || spec.instructions ? { systemPrompt: spec.systemPrompt || spec.instructions } : {}),
       ...(spec.personaContext ? { personaContext: spec.personaContext } : {})
     });
@@ -1202,6 +1274,7 @@ async function runParticipantsCommand(client, args) {
 }
 
 async function runAddAssistantCommand(client, args) {
+  const effort = normalizeClaudeCliEffort(args.effort);
   const conversationId = args['conversation-id'];
   if (!conversationId) {
     throw new Error('add-assistant requires --conversation-id.');
@@ -1219,7 +1292,7 @@ async function runAddAssistantCommand(client, args) {
     name: args.name,
     type: 'assistant',
     model: modelInfo.id,
-    settings: modelDefaultsFromInfo(modelInfo),
+    settings: modelDefaultsFromInfo(modelInfo, effort),
     ...(systemPrompt ? { systemPrompt } : {}),
     ...(personaContext ? { personaContext } : {})
   });
@@ -1320,7 +1393,8 @@ async function runWaitMessageCommand(client, args) {
     participantId: message.participantId,
     messageId: message.messageId,
     branchId: message.branchId,
-    content: message.content
+    content: message.content,
+    contentBlocks: message.contentBlocks
   };
 }
 
@@ -1369,7 +1443,8 @@ async function runLastMessageCommand(client, args) {
     participantId: branch?.participantId,
     messageId: lastMessage.id,
     branchId: branch?.id,
-    content: (branch?.content || '').trim()
+    content: getBranchContent(branch),
+    contentBlocks: getBranchContentBlocks(branch)
   };
 }
 
@@ -1417,7 +1492,8 @@ async function runGetMessagesCommand(client, args) {
         participantId: branch?.participantId,
         messageId: message.id,
         branchId: branch?.id,
-        content: (branch?.content || '').trim()
+        content: getBranchContent(branch),
+        contentBlocks: getBranchContentBlocks(branch)
       };
     })
   };
@@ -1463,6 +1539,7 @@ async function runAppendAssistantCommand(client, args) {
 }
 
 async function runStoneCommand(client, args) {
+  const effort = normalizeClaudeCliEffort(args.effort);
   if (!args['stone-file']) {
     throw new Error('stone requires --stone-file.');
   }
@@ -1478,7 +1555,8 @@ async function runStoneCommand(client, args) {
   const conversation = await client.createConversation({
     title: args.title || `Sensory stone: ${territory}`,
     model,
-    systemPrompt: args['system-prompt']
+    systemPrompt: args['system-prompt'],
+    settings: modelDefaultsFromInfo(await resolveModelInfo(client, model), effort)
   });
 
   const consentResponse = await client.sendChat({
@@ -1495,7 +1573,8 @@ async function runStoneCommand(client, args) {
       conversationId: conversation.id,
       conversationUrl: conversationUrl(client.appUrl, conversation.id),
       territory,
-      consentResponse: consentResponse.responseText
+      consentResponse: consentResponse.responseText,
+      consentResponseContentBlocks: consentResponse.contentBlocks
     };
   }
 
@@ -1519,7 +1598,9 @@ async function runStoneCommand(client, args) {
     conversationUrl: conversationUrl(client.appUrl, conversation.id),
     territory,
     consentResponse: consentResponse.responseText,
-    stoneResponse: stoneResponse.responseText
+    consentResponseContentBlocks: consentResponse.contentBlocks,
+    stoneResponse: stoneResponse.responseText,
+    stoneResponseContentBlocks: stoneResponse.contentBlocks
   };
 }
 
