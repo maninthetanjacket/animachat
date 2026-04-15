@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+export const ClaudeCliEffortLevelSchema = z.enum(['low', 'medium', 'high', 'max']);
+export type ClaudeCliEffortLevel = z.infer<typeof ClaudeCliEffortLevelSchema>;
+
 // User types
 export const UserSchema = z.object({
   id: z.string().uuid(),
@@ -216,6 +219,7 @@ export const ModelSettingsSchema = z.object({
   maxTokens: z.number(),
   topP: z.number().optional(),
   topK: z.number().optional(),
+  effort: ClaudeCliEffortLevelSchema.optional(),
   thinking: z.object({
     enabled: z.boolean(),
     budgetTokens: z.number().min(1024)
@@ -255,6 +259,10 @@ export function getValidatedModelDefaults(model: Model): ModelSettings {
     temperature: model.settings.temperature.default,
     maxTokens: maxTokensDefault,
   };
+
+  if (model.provider === 'anthropic' && model.providerModelId === 'claude-opus-4-6') {
+    settings.effort = 'medium';
+  }
   
   // Anthropic API doesn't allow both temperature AND topP/topK together
   // Only include topP/topK for non-Anthropic providers

@@ -66,6 +66,7 @@ export class LLMLogger {
     service: 'anthropic' | 'bedrock';
     model: string;
     chunks?: string[];
+    contentBlocks?: any[];
     error?: string;
     duration?: number;
     tokenCount?: number;

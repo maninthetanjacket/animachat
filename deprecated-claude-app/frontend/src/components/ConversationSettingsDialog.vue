@@ -380,6 +380,20 @@
               </template>
             </v-slider>
           </div>
+
+          <div v-if="showClaudeCliEffortSetting" class="mt-4">
+            <v-select
+              v-model="settings.settings.effort"
+              :items="claudeCliEffortOptions"
+              item-title="title"
+              item-value="value"
+              label="Claude CLI Effort"
+              variant="outlined"
+              density="compact"
+              hint="Used with `claude -p --effort` when this conversation runs through Claude CLI. Opus 4.6 supports low, medium, high, and max."
+              persistent-hint
+            />
+          </div>
           
           <!-- Sampling Branches -->
           <div class="mt-4">
@@ -636,6 +650,12 @@ const topKEnabled = ref(false);
 const thinkingEnabled = ref(false);
 const thinkingBudgetTokens = ref(10000);
 const samplingBranches = ref(1);
+const claudeCliEffortOptions = [
+  { title: 'Low', value: 'low' },
+  { title: 'Medium', value: 'medium' },
+  { title: 'High', value: 'high' },
+  { title: 'Max', value: 'max' }
+] as const;
 
 const contextStrategy = ref('append');
 const rollingMaxTokens = ref(50000);
@@ -727,6 +747,10 @@ const selectedModel = computed(() => {
   return props.models.find(m => m.id === settings.value.model);
 });
 
+const showClaudeCliEffortSetting = computed(() => {
+  return selectedModel.value?.provider === 'anthropic' && selectedModel.value?.providerModelId === 'claude-opus-4-6';
+});
+
 // Flag to prevent loading participants right after saving them
 const justSavedParticipants = ref(false);
 
@@ -764,7 +788,10 @@ watch(() => props.conversation, async (conversation) => {
       model: conversation.model,
       format: conversation.format || 'standard',
       systemPrompt: conversation.systemPrompt || '',
-      settings: { ...conversation.settings }
+      settings: {
+        ...conversation.settings,
+        ...(conversation.settings?.effort ? { effort: conversation.settings.effort } : {})
+      }
     };
     
     // Set checkbox states based on whether values are defined
@@ -931,6 +958,7 @@ watch(() => settings.value.model, (modelId) => {
       maxTokens: validatedMaxTokens,
       topP: undefined,
       topK: undefined,
+      ...(model.provider === 'anthropic' && model.providerModelId === 'claude-opus-4-6' ? { effort: 'medium' } : {}),
       modelSpecific: modelSpecificDefaults,
     };
     
@@ -944,6 +972,12 @@ watch(() => settings.value.model, (modelId) => {
     } else if (!model.supportsThinking) {
       // Disable thinking if the new model doesn't support it
       thinkingEnabled.value = false;
+    }
+    
+    if (model.provider !== 'anthropic' || model.providerModelId !== 'claude-opus-4-6') {
+      settings.value.settings.effort = undefined;
+    } else if (!settings.value.settings.effort) {
+      settings.value.settings.effort = 'medium';
     }
   }
 });
@@ -972,7 +1006,8 @@ function resetToDefaults() {
       temperature: selectedModel.value.settings.temperature.default,
       maxTokens: selectedModel.value.settings.maxTokens.default,
       topP: undefined,
-      topK: undefined
+      topK: undefined,
+      ...(showClaudeCliEffortSetting.value ? { effort: 'medium' } : {})
     };
     
     // Disable topP, topK, and thinking by default
@@ -1005,6 +1040,7 @@ function save() {
     maxTokens: settings.value.settings.maxTokens,
     ...(topPEnabled.value && settings.value.settings.topP !== undefined && { topP: settings.value.settings.topP }),
     ...(topKEnabled.value && settings.value.settings.topK !== undefined && { topK: settings.value.settings.topK }),
+    ...(showClaudeCliEffortSetting.value && settings.value.settings.effort && { effort: settings.value.settings.effort }),
     ...(thinkingEnabled.value && { thinking: { enabled: true, budgetTokens: thinkingBudgetTokens.value } }),
     ...(samplingBranches.value > 1 && { samplingBranches: samplingBranches.value }),
     ...(hasModelSpecific && { modelSpecific })

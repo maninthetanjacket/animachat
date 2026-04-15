@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { Message, getActiveBranch, ModelSettings } from '@deprecated-claude/shared';
+import { Message, getActiveBranch, ModelSettings, ClaudeCliEffortLevel, ContentBlock } from '@deprecated-claude/shared';
 import { Database } from '../database/index.js';
 import { llmLogger } from '../utils/llmLogger.js';
 import sharp from 'sharp';
@@ -73,6 +73,7 @@ export class AnthropicService {
         modelId,
         messages,
         systemPrompt,
+        settings,
         onChunk,
         conversationId,
         responderId
@@ -370,6 +371,7 @@ export class AnthropicService {
             service: 'anthropic',
             model: requestParams.model,
             chunks,
+            contentBlocks: finalContentBlocks,
             duration
           });
           
@@ -794,6 +796,7 @@ export class AnthropicService {
     modelId: string,
     messages: Message[],
     systemPrompt: string | undefined,
+    settings: ModelSettings,
     onChunk: (chunk: string, isComplete: boolean, contentBlocks?: any[], usage?: any) => Promise<void>,
     conversationId?: string,
     responderId?: string
@@ -804,7 +807,7 @@ export class AnthropicService {
     const effectiveSystemPrompt = systemPrompt?.trim() ? systemPrompt : undefined;
     const sessionKey = this.getClaudeCliSessionKey(conversationId, responderId);
     let sessionState = sessionKey ? AnthropicService.claudeCliSessions.get(sessionKey) : undefined;
-    let syncStatus: 'stateless' | 'delta' | 'reset' | 'full';
+    let syncStatus: 'stateless' | 'delta' | 'reset' | 'full' = sessionKey ? 'full' : 'stateless';
     let syncReason: string | undefined;
 
     if (sessionState) {
@@ -829,7 +832,7 @@ export class AnthropicService {
         }
       }
 
-      if (syncStatus === 'reset') {
+      if (syncStatus === 'reset' && sessionKey) {
         console.warn(`[Anthropic CLI] Resetting Claude session for ${sessionKey}: ${syncReason}`);
         AnthropicService.claudeCliSessions.delete(sessionKey);
         sessionState = undefined;
@@ -841,14 +844,15 @@ export class AnthropicService {
       ? currentCliMessages.slice(sessionState.messages.length)
       : currentCliMessages;
     const prompt = this.buildClaudeCliPromptFromSerialized(promptMessages);
+    const effort = this.resolveClaudeCliEffort(cliModelId, settings.effort);
     const cliCommand = process.env.ANTHROPIC_CLAUDE_CLI_PATH || 'claude';
     const requestId = `anthropic-cli-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const startTime = Date.now();
 
     if (!sessionKey) {
       syncStatus = 'stateless';
-    } else if (!sessionState) {
-      syncStatus = syncStatus ?? 'full';
+    } else if (!sessionState && syncStatus !== 'reset') {
+      syncStatus = 'full';
     }
 
     const args = [
@@ -883,10 +887,15 @@ export class AnthropicService {
       args.push('--system-prompt', effectiveSystemPrompt);
     }
 
+    if (effort) {
+      args.push('--effort', effort);
+    }
+
     const rawRequest = {
       transport: 'claude-cli',
       command: cliCommand,
       model: cliModelId,
+      effort,
       sessionKey,
       sessionId,
       resumeSession: !!sessionState,
@@ -913,14 +922,62 @@ export class AnthropicService {
     let stdoutBuffer = '';
     let stderrBuffer = '';
     let emittedText = '';
+    let latestThinkingBlocks: ContentBlock[] = [];
+    let latestTextBlock: ContentBlock | undefined;
+    let lastEmittedContentBlocksKey: string | undefined;
     const chunks: string[] = [];
     let streamChain = Promise.resolve();
+
+    const getCurrentClaudeCliContentBlocks = (): ContentBlock[] | undefined => {
+      const contentBlocks = [
+        ...latestThinkingBlocks,
+        ...(latestTextBlock ? [latestTextBlock] : [])
+      ];
+      return contentBlocks.length > 0 ? contentBlocks : undefined;
+    };
+
+    const emitContentBlocksUpdate = (force = false) => {
+      const contentBlocks = getCurrentClaudeCliContentBlocks();
+      if (!contentBlocks) return;
+
+      const contentBlocksKey = JSON.stringify(contentBlocks);
+      if (!force && contentBlocksKey === lastEmittedContentBlocksKey) {
+        return;
+      }
+
+      lastEmittedContentBlocksKey = contentBlocksKey;
+      streamChain = streamChain.then(() => onChunk('', false, contentBlocks));
+    };
 
     const emitDelta = (delta: string) => {
       if (!delta) return;
       emittedText += delta;
       chunks.push(delta);
-      streamChain = streamChain.then(() => onChunk(delta, false));
+      const contentBlocks = getCurrentClaudeCliContentBlocks();
+      streamChain = streamChain.then(() => onChunk(delta, false, contentBlocks));
+    };
+
+    const emitSnapshotDelta = (snapshotText: string | undefined): boolean => {
+      if (!snapshotText || snapshotText.length <= emittedText.length) {
+        return false;
+      }
+
+      if (snapshotText.startsWith(emittedText)) {
+        emitDelta(snapshotText.slice(emittedText.length));
+        return true;
+      }
+
+      // If the CLI re-emits a full snapshot we don't recognize, fall back to suffix-only.
+      let commonPrefix = 0;
+      while (
+        commonPrefix < emittedText.length &&
+        commonPrefix < snapshotText.length &&
+        emittedText[commonPrefix] === snapshotText[commonPrefix]
+      ) {
+        commonPrefix += 1;
+      }
+      emitDelta(snapshotText.slice(commonPrefix));
+      return true;
     };
 
     const processOutputLine = (line: string) => {
@@ -934,6 +991,30 @@ export class AnthropicService {
         return;
       }
 
+      const structuredContent = this.extractClaudeCliStructuredContent(parsed);
+      if (structuredContent) {
+        if (structuredContent.thinkingBlocks.length > 0) {
+          latestThinkingBlocks = structuredContent.thinkingBlocks;
+          emitContentBlocksUpdate();
+        }
+
+        if (structuredContent.text !== undefined) {
+          latestTextBlock = {
+            type: 'text',
+            text: structuredContent.text
+          };
+          const emittedTextDelta = emitSnapshotDelta(structuredContent.text);
+          if (!emittedTextDelta) {
+            emitContentBlocksUpdate();
+          }
+          return;
+        }
+
+        if (structuredContent.thinkingBlocks.length > 0) {
+          return;
+        }
+      }
+
       const directDelta = this.extractClaudeCliDelta(parsed);
       if (directDelta) {
         emitDelta(directDelta);
@@ -941,25 +1022,7 @@ export class AnthropicService {
       }
 
       const snapshotText = this.extractClaudeCliSnapshotText(parsed);
-      if (!snapshotText || snapshotText.length <= emittedText.length) {
-        return;
-      }
-
-      if (snapshotText.startsWith(emittedText)) {
-        emitDelta(snapshotText.slice(emittedText.length));
-        return;
-      }
-
-      // If the CLI re-emits a full snapshot we don't recognize, fall back to suffix-only.
-      let commonPrefix = 0;
-      while (
-        commonPrefix < emittedText.length &&
-        commonPrefix < snapshotText.length &&
-        emittedText[commonPrefix] === snapshotText[commonPrefix]
-      ) {
-        commonPrefix += 1;
-      }
-      emitDelta(snapshotText.slice(commonPrefix));
+      emitSnapshotDelta(snapshotText);
     };
 
     try {
@@ -1004,7 +1067,7 @@ export class AnthropicService {
         );
       }
 
-      const contentBlocks = this.parseThinkingTags(emittedText);
+      const contentBlocks = getCurrentClaudeCliContentBlocks() || this.parseThinkingTags(emittedText);
       await onChunk('', true, contentBlocks.length > 0 ? contentBlocks : undefined);
 
       await llmLogger.logResponse({
@@ -1012,6 +1075,7 @@ export class AnthropicService {
         service: 'anthropic',
         model: cliModelId,
         chunks,
+        contentBlocks,
         duration: Date.now() - startTime
       });
 
@@ -1230,6 +1294,14 @@ export class AnthropicService {
     return aliases[normalized] || normalized;
   }
 
+  private resolveClaudeCliEffort(modelId: string, effort?: ClaudeCliEffortLevel): ClaudeCliEffortLevel | undefined {
+    if (!effort) {
+      return undefined;
+    }
+
+    return modelId === 'claude-opus-4-6' ? effort : undefined;
+  }
+
   private extractClaudeCliDelta(parsed: any): string | undefined {
     const event = parsed?.event || parsed;
 
@@ -1255,6 +1327,58 @@ export class AnthropicService {
       || this.extractClaudeCliTextValue(parsed?.result?.message)
       || this.extractClaudeCliTextValue(parsed?.content)
       || this.extractClaudeCliTextValue(parsed);
+  }
+
+  private extractClaudeCliStructuredContent(parsed: any): { thinkingBlocks: ContentBlock[]; text?: string } | undefined {
+    const message = parsed?.message
+      || parsed?.result_message
+      || parsed?.result?.message;
+
+    const content = Array.isArray(message?.content)
+      ? message.content
+      : Array.isArray(parsed?.content)
+        ? parsed.content
+        : undefined;
+
+    if (!content) {
+      return undefined;
+    }
+
+    const thinkingBlocks: ContentBlock[] = [];
+    let text: string | undefined;
+
+    for (const block of content) {
+      if (!block || typeof block !== 'object') {
+        continue;
+      }
+
+      if (block.type === 'thinking' && typeof block.thinking === 'string') {
+        thinkingBlocks.push({
+          type: 'thinking',
+          thinking: block.thinking,
+          ...(typeof block.signature === 'string' ? { signature: block.signature } : {})
+        });
+        continue;
+      }
+
+      if (block.type === 'redacted_thinking') {
+        thinkingBlocks.push({
+          type: 'redacted_thinking',
+          data: typeof block.data === 'string' ? block.data : ''
+        });
+        continue;
+      }
+
+      if (block.type === 'text' && typeof block.text === 'string') {
+        text = block.text;
+      }
+    }
+
+    if (thinkingBlocks.length === 0 && text === undefined) {
+      return undefined;
+    }
+
+    return { thinkingBlocks, text };
   }
 
   private extractClaudeCliTextValue(value: any): string | undefined {

@@ -356,6 +356,22 @@
               class="mt-2"
             />
           </div>
+
+          <div v-if="showSelectedParticipantClaudeCliEffortSetting" class="mb-4">
+            <v-select
+              :model-value="getParticipantSettingsField('effort', 'medium')"
+              @update:model-value="(val) => setParticipantSettingsField('effort', val)"
+              :items="claudeCliEffortOptions"
+              item-title="title"
+              item-value="value"
+              label="Claude CLI Effort"
+              hide-details
+              density="compact"
+              variant="outlined"
+              hint="Used with `claude -p --effort` when this assistant runs through Claude CLI."
+              persistent-hint
+            />
+          </div>
           
           <!-- Model-Specific Settings -->
           <ModelSpecificSettings
@@ -692,6 +708,13 @@ const pseudoPrefillModeOptions = [
   }
 ];
 
+const claudeCliEffortOptions = [
+  { title: 'Low', value: 'low' },
+  { title: 'Medium', value: 'medium' },
+  { title: 'High', value: 'high' },
+  { title: 'Max', value: 'max' }
+] as const;
+
 const selectedParticipantPseudoPrefillMode = computed(() => {
   const participant = participants.value.find(p => p.id === selectedParticipantId.value);
   return participant?.pseudoPrefillMode || 'cat';
@@ -771,6 +794,10 @@ const selectedParticipantModel = computed(() => {
   const participant = participants.value.find(p => p.id === selectedParticipantId.value);
   if (!participant || participant.type !== 'assistant') return null;
   return props.models.find(m => m.id === participant.model) || null;
+});
+
+const showSelectedParticipantClaudeCliEffortSetting = computed(() => {
+  return selectedParticipantModel.value?.provider === 'anthropic' && selectedParticipantModel.value?.providerModelId === 'claude-opus-4-6';
 });
 
 const selectedParticipantConfigurableSettings = computed<ConfigurableSetting[]>(() => {
@@ -992,6 +1019,13 @@ function updateParticipantModel(participant: any, newModelId: string) {
   if (updated[idx].settings?.thinking && !newModel?.supportsThinking) {
     console.log('  Clearing thinking settings (new model does not support thinking)');
     delete updated[idx].settings.thinking;
+  }
+
+  if (newModel?.provider === 'anthropic' && newModel.providerModelId === 'claude-opus-4-6') {
+    updated[idx].settings = updated[idx].settings || {};
+    updated[idx].settings.effort = updated[idx].settings.effort || 'medium';
+  } else if (updated[idx].settings?.effort) {
+    delete updated[idx].settings.effort;
   }
   
   // Ensure maxTokens doesn't exceed the new model's output limit
