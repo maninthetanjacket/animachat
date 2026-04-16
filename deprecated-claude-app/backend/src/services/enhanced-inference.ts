@@ -53,7 +53,7 @@ type CostBreakdown = {
 
 const INPUT_PRICING_PER_MILLION: Record<string, number> = {
   // Claude 4.x models (2025) - by providerModelId
-  'claude-opus-4-7-20260414': 5.00,
+  'claude-opus-4-7': 5.00,
   'claude-opus-4-6': 5.00,
   'claude-sonnet-4-6': 3.00,
   'claude-opus-4-5-20251101': 5.00,
@@ -107,7 +107,7 @@ const INPUT_PRICING_PER_MILLION: Record<string, number> = {
   'anthropic.claude-3-haiku-20240307-v1:0': 0.25,
   
   // OpenRouter model IDs (anthropic/*)
-  'anthropic/claude-opus-4-7-20260414': 5.00,
+  'anthropic/claude-opus-4-7': 5.00,
   'anthropic/claude-opus-4-6': 5.00,
   'anthropic/claude-sonnet-4-6': 3.00,
   'anthropic/claude-opus-4.5': 5.00,
@@ -146,7 +146,7 @@ const INPUT_PRICING_PER_MILLION: Record<string, number> = {
 
 const OUTPUT_PRICING_PER_MILLION: Record<string, number> = {
   // Claude 4.x models (2025) - by providerModelId
-  'claude-opus-4-7-20260414': 25.00,
+  'claude-opus-4-7': 25.00,
   'claude-opus-4-6': 25.00,
   'claude-sonnet-4-6': 15.00,
   'claude-opus-4-5-20251101': 25.00,
@@ -200,7 +200,7 @@ const OUTPUT_PRICING_PER_MILLION: Record<string, number> = {
   'anthropic.claude-3-haiku-20240307-v1:0': 1.25,
   
   // OpenRouter model IDs (anthropic/*)
-  'anthropic/claude-opus-4-7-20260414': 25.00,
+  'anthropic/claude-opus-4-7': 25.00,
   'anthropic/claude-opus-4-6': 25.00,
   'anthropic/claude-sonnet-4-6': 15.00,
   'anthropic/claude-opus-4.5': 25.00,

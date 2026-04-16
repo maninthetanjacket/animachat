@@ -2,7 +2,7 @@
   "models": [
     {
       "id": "claude-opus-4.7",
-      "providerModelId": "claude-opus-4-7-20260414",
+      "providerModelId": "claude-opus-4-7",
       "canonicalId": "claude-opus-4.7",
       "displayName": "Claude Opus 4.7",
       "shortName": "Opus 4.7",
@@ -892,7 +892,7 @@
     },
     {
       "id": "claude-opus-4.7-openrouter",
-      "providerModelId": "anthropic/claude-opus-4-7-20260414",
+      "providerModelId": "anthropic/claude-opus-4-7",
       "displayName": "Claude Opus 4.7 (OpenRouter)",
       "shortName": "Opus 4.7",
       "provider": "openrouter",
