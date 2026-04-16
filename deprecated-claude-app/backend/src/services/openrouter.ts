@@ -216,6 +216,18 @@ export class OpenRouterService {
         }
       }
 
+      // Build reasoning config: merges thinking budget (Anthropic/Gemini) and
+      // reasoning effort (OpenAI GPT-5 series) into OpenRouter's unified
+      // `reasoning` object. Both fields can coexist in theory.
+      const reasoningConfig: { max_tokens?: number; effort?: string } = {};
+      if (settings.thinking?.enabled && settings.thinking.budgetTokens) {
+        reasoningConfig.max_tokens = settings.thinking.budgetTokens;
+      }
+      const reasoningEffort = settings.modelSpecific?.reasoningEffort;
+      if (typeof reasoningEffort === 'string') {
+        reasoningConfig.effort = reasoningEffort;
+      }
+
       requestBody = {
         model: modelId,
         messages: openRouterMessages,
@@ -225,16 +237,12 @@ export class OpenRouterService {
         ...(settings.topP !== undefined && { top_p: settings.topP }),
         ...(settings.topK !== undefined && { top_k: settings.topK }),
         ...(stopSequences && stopSequences.length > 0 && { stop: stopSequences }),
-        
+
         // Required for cache metrics in response
         usage: { include: true },
-        
-        // Add reasoning/thinking support for models that support it
-        ...(settings.thinking?.enabled && settings.thinking.budgetTokens && {
-          reasoning: {
-            max_tokens: settings.thinking.budgetTokens
-          }
-        })
+
+        // Reasoning config (effort for OpenAI GPT-5, max_tokens for thinking models)
+        ...(Object.keys(reasoningConfig).length > 0 && { reasoning: reasoningConfig })
       };
       
       // For Anthropic models: force native provider and enable caching

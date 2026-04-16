@@ -53,6 +53,7 @@ type CostBreakdown = {
 
 const INPUT_PRICING_PER_MILLION: Record<string, number> = {
   // Claude 4.x models (2025) - by providerModelId
+  'claude-opus-4-7': 5.00,
   'claude-opus-4-6': 5.00,
   'claude-sonnet-4-6': 3.00,
   'claude-opus-4-5-20251101': 5.00,
@@ -72,6 +73,7 @@ const INPUT_PRICING_PER_MILLION: Record<string, number> = {
   'claude-3-haiku-20240307': 0.25,
   
   // Shorthand model IDs (for backwards compatibility / fallback)
+  'claude-opus-4.7': 5.00,
   'claude-opus-4.6': 5.00,
   'claude-sonnet-4.6': 3.00,
   'claude-opus-4.5': 5.00,
@@ -105,6 +107,7 @@ const INPUT_PRICING_PER_MILLION: Record<string, number> = {
   'anthropic.claude-3-haiku-20240307-v1:0': 0.25,
   
   // OpenRouter model IDs (anthropic/*)
+  'anthropic/claude-opus-4-7': 5.00,
   'anthropic/claude-opus-4-6': 5.00,
   'anthropic/claude-sonnet-4-6': 3.00,
   'anthropic/claude-opus-4.5': 5.00,
@@ -135,10 +138,15 @@ const INPUT_PRICING_PER_MILLION: Record<string, number> = {
   'gemini-2.5-flash-imagegen': 0.15,
   'gemini-2.5-flash-image-imagegen': 0.15,
   'gemini-3-pro-imagegen': 1.25,
+
+  // OpenAI models (via OpenRouter)
+  'openai/gpt-5.4': 2.00,
+  'gpt-5.4-openrouter': 2.00,
 };
 
 const OUTPUT_PRICING_PER_MILLION: Record<string, number> = {
   // Claude 4.x models (2025) - by providerModelId
+  'claude-opus-4-7': 25.00,
   'claude-opus-4-6': 25.00,
   'claude-sonnet-4-6': 15.00,
   'claude-opus-4-5-20251101': 25.00,
@@ -158,6 +166,7 @@ const OUTPUT_PRICING_PER_MILLION: Record<string, number> = {
   'claude-3-haiku-20240307': 1.25,
   
   // Shorthand model IDs (for backwards compatibility / fallback)
+  'claude-opus-4.7': 25.00,
   'claude-opus-4.6': 25.00,
   'claude-sonnet-4.6': 15.00,
   'claude-opus-4.5': 25.00,
@@ -191,6 +200,7 @@ const OUTPUT_PRICING_PER_MILLION: Record<string, number> = {
   'anthropic.claude-3-haiku-20240307-v1:0': 1.25,
   
   // OpenRouter model IDs (anthropic/*)
+  'anthropic/claude-opus-4-7': 25.00,
   'anthropic/claude-opus-4-6': 25.00,
   'anthropic/claude-sonnet-4-6': 15.00,
   'anthropic/claude-opus-4.5': 25.00,
@@ -221,6 +231,10 @@ const OUTPUT_PRICING_PER_MILLION: Record<string, number> = {
   'gemini-2.5-flash-imagegen': 0.60,
   'gemini-2.5-flash-image-imagegen': 0.60,
   'gemini-3-pro-imagegen': 5.00,
+
+  // OpenAI models (via OpenRouter)
+  'openai/gpt-5.4': 8.00,
+  'gpt-5.4-openrouter': 8.00,
 };
 
 const CACHE_DISCOUNT = 0.9;

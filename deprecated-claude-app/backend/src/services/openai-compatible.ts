@@ -60,6 +60,12 @@ export class OpenAICompatibleService {
         omitStopSequences
       );
 
+      // OpenAI reasoning_effort (low/medium/high) for reasoning models
+      const reasoningEffort = settings.modelSpecific?.reasoningEffort;
+      if (typeof reasoningEffort === 'string') {
+        requestBody.reasoning_effort = reasoningEffort;
+      }
+
       // Log the request
       await llmLogger.logRequest({
         requestId,

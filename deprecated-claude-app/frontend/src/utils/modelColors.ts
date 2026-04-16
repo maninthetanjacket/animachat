@@ -1,6 +1,7 @@
 // Model color definitions
 export const MODEL_COLORS: Record<string, string> = {
   // Claude Opus models
+  'claude-opus-4-7': '#9c27b0',              // Deep purple
   'claude-opus-4-6': '#c850c0',              // Vivid purple
   'claude-opus-4-5-20251101': '#ff6090',     // Warm pink
   'claude-opus-4-1-20250805': '#e07102',     // Deep orange
@@ -26,6 +27,7 @@ export const MODEL_COLORS: Record<string, string> = {
   'claude-instant-1.2': '#ffb74d',            // Lighter orange
   
   // OpenAI GPT models - Pink/Magenta shades (distinct from Claude)
+  'gpt-5.4': '#00c853',                       // Vivid green (GPT-5 series — reasoning)
   'gpt-4-turbo': '#e91e63',                   // Pink
   'gpt-4o': '#ad1457',                        // Deep pink
   'gpt-4o-mini': '#ec407a',                   // Light pink
@@ -75,6 +77,9 @@ export function getModelColor(model: string | undefined): string {
   
   // Claude Opus variants (including Bedrock and OpenRouter)
   // Check most specific first (4.6 before 4.1 before generic 4)
+  if (modelLower.includes('opus-4-7') || modelLower.includes('opus-4.7') || modelLower.includes('opus 4.7')) {
+    return MODEL_COLORS['claude-opus-4-7'];
+  }
   if (modelLower.includes('opus-4-6') || modelLower.includes('opus-4.6') || modelLower.includes('opus 4.6')) {
     return MODEL_COLORS['claude-opus-4-6'];
   }
@@ -134,6 +139,9 @@ export function getModelColor(model: string | undefined): string {
   }
   
   // GPT variants
+  if (modelLower.includes('gpt-5.4') || modelLower.includes('gpt-5-4')) {
+    return MODEL_COLORS['gpt-5.4'];
+  }
   if (modelLower.includes('gpt-4-turbo') || modelLower.includes('gpt-4 turbo')) {
     return MODEL_COLORS['gpt-4-turbo'];
   }
