@@ -29,10 +29,10 @@ function usage() {
   console.error(`Usage:
   node scripts/arc-chat-adapter.mjs chat --conversation-id <id> --message "Hello"
   node scripts/arc-chat-adapter.mjs chat --model <model> --title "My Chat" --message-file prompt.txt
-  node scripts/arc-chat-adapter.mjs chat --model claude-opus-4.6 --effort max --title "My Chat" --message-file prompt.txt
+  node scripts/arc-chat-adapter.mjs chat --model claude-opus-4.7 --effort max --title "My Chat" --message-file prompt.txt
   node scripts/arc-chat-adapter.mjs create-group --title "CC Chat" --assistants "CC-1,CC-2" --model gpt-5.4
   node scripts/arc-chat-adapter.mjs participants --conversation-id <id>
-  node scripts/arc-chat-adapter.mjs add-assistant --conversation-id <id> --name "CC-3" --model claude-opus-4.6 --effort high
+  node scripts/arc-chat-adapter.mjs add-assistant --conversation-id <id> --name "CC-3" --model claude-opus-4.7 --effort high
   node scripts/arc-chat-adapter.mjs post-message --conversation-id <id> --participant "CC-1" --content "Hello"
   node scripts/arc-chat-adapter.mjs wait-message --conversation-id <id> --from "CC-2" --after-message-id <id>
   node scripts/arc-chat-adapter.mjs last-message --conversation-id <id> [--from "CC-2"]
@@ -51,7 +51,7 @@ Common options:
 
 Model settings:
   --effort <level>     Claude CLI effort for created conversation/assistant settings.
-                       Valid: low, medium, high, max. Intended for Claude Opus 4.6.
+                       Valid: low, medium, high, max. Intended for Claude Opus 4.6/4.7.
 `);
 }
 
@@ -231,9 +231,42 @@ function printMessageWithContentBlocks(content, contentBlocks) {
   console.log(content);
 }
 
+function stripDuplicatedTextForJson(result) {
+  if (!result || typeof result !== 'object') {
+    return result;
+  }
+
+  const normalized = JSON.parse(JSON.stringify(result));
+
+  if (Array.isArray(normalized.messages)) {
+    normalized.messages = normalized.messages.map((message) => {
+      if (Array.isArray(message?.contentBlocks) && message.contentBlocks.length > 0) {
+        const { content, ...rest } = message;
+        return rest;
+      }
+      return message;
+    });
+  }
+
+  const textAndBlocksPairs = [
+    ['responseText', 'contentBlocks'],
+    ['content', 'contentBlocks'],
+    ['consentResponse', 'consentResponseContentBlocks'],
+    ['stoneResponse', 'stoneResponseContentBlocks']
+  ];
+
+  for (const [textKey, blocksKey] of textAndBlocksPairs) {
+    if (Array.isArray(normalized[blocksKey]) && normalized[blocksKey].length > 0) {
+      delete normalized[textKey];
+    }
+  }
+
+  return normalized;
+}
+
 function printResult(result, jsonMode) {
   if (jsonMode) {
-    console.log(JSON.stringify(result, null, 2));
+    console.log(JSON.stringify(stripDuplicatedTextForJson(result), null, 2));
     return;
   }
 
@@ -990,8 +1023,9 @@ async function resolveModelInfo(client, requestedModel) {
   return models[0];
 }
 
-function isClaudeOpus46(modelInfo) {
-  return modelInfo?.provider === 'anthropic' && modelInfo?.providerModelId === 'claude-opus-4-6';
+function supportsClaudeCliEffort(modelInfo) {
+  return modelInfo?.provider === 'anthropic'
+    && (modelInfo?.providerModelId === 'claude-opus-4-6' || modelInfo?.providerModelId === 'claude-opus-4-7');
 }
 
 function modelDefaultsFromInfo(modelInfo, effort = undefined) {
@@ -1003,7 +1037,7 @@ function modelDefaultsFromInfo(modelInfo, effort = undefined) {
     ...(settings.topK?.default !== undefined ? { topK: settings.topK.default } : {})
   };
 
-  const resolvedEffort = effort ?? (isClaudeOpus46(modelInfo) ? 'medium' : undefined);
+  const resolvedEffort = effort ?? (supportsClaudeCliEffort(modelInfo) ? 'medium' : undefined);
   if (resolvedEffort) {
     defaults.effort = resolvedEffort;
   }

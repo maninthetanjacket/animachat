@@ -796,8 +796,13 @@ const selectedParticipantModel = computed(() => {
   return props.models.find(m => m.id === participant.model) || null;
 });
 
+function modelSupportsClaudeCliEffort(model?: Model | null) {
+  return model?.provider === 'anthropic'
+    && (model.providerModelId === 'claude-opus-4-6' || model.providerModelId === 'claude-opus-4-7');
+}
+
 const showSelectedParticipantClaudeCliEffortSetting = computed(() => {
-  return selectedParticipantModel.value?.provider === 'anthropic' && selectedParticipantModel.value?.providerModelId === 'claude-opus-4-6';
+  return modelSupportsClaudeCliEffort(selectedParticipantModel.value);
 });
 
 const selectedParticipantConfigurableSettings = computed<ConfigurableSetting[]>(() => {
@@ -1021,7 +1026,7 @@ function updateParticipantModel(participant: any, newModelId: string) {
     delete updated[idx].settings.thinking;
   }
 
-  if (newModel?.provider === 'anthropic' && newModel.providerModelId === 'claude-opus-4-6') {
+  if (modelSupportsClaudeCliEffort(newModel)) {
     updated[idx].settings = updated[idx].settings || {};
     updated[idx].settings.effort = updated[idx].settings.effort || 'medium';
   } else if (updated[idx].settings?.effort) {

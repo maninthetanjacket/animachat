@@ -3,6 +3,11 @@ import { z } from 'zod';
 export const ClaudeCliEffortLevelSchema = z.enum(['low', 'medium', 'high', 'max']);
 export type ClaudeCliEffortLevel = z.infer<typeof ClaudeCliEffortLevelSchema>;
 
+function supportsClaudeCliEffort(model: Pick<Model, 'provider' | 'providerModelId'>): boolean {
+  return model.provider === 'anthropic'
+    && (model.providerModelId === 'claude-opus-4-6' || model.providerModelId === 'claude-opus-4-7');
+}
+
 // User types
 export const UserSchema = z.object({
   id: z.string().uuid(),
@@ -260,7 +265,7 @@ export function getValidatedModelDefaults(model: Model): ModelSettings {
     maxTokens: maxTokensDefault,
   };
 
-  if (model.provider === 'anthropic' && model.providerModelId === 'claude-opus-4-6') {
+  if (supportsClaudeCliEffort(model)) {
     settings.effort = 'medium';
   }
   

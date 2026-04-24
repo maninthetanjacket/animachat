@@ -1299,7 +1299,9 @@ export class AnthropicService {
       return undefined;
     }
 
-    return modelId === 'claude-opus-4-6' ? effort : undefined;
+    return modelId === 'claude-opus-4-6' || modelId === 'claude-opus-4-7'
+      ? effort
+      : undefined;
   }
 
   private extractClaudeCliDelta(parsed: any): string | undefined {

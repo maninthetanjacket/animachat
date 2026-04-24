@@ -390,7 +390,7 @@
               label="Claude CLI Effort"
               variant="outlined"
               density="compact"
-              hint="Used with `claude -p --effort` when this conversation runs through Claude CLI. Opus 4.6 supports low, medium, high, and max."
+              hint="Used with `claude -p --effort` when this conversation runs through Claude CLI. Opus 4.6 and 4.7 support low, medium, high, and max."
               persistent-hint
             />
           </div>
@@ -747,8 +747,13 @@ const selectedModel = computed(() => {
   return props.models.find(m => m.id === settings.value.model);
 });
 
+function modelSupportsClaudeCliEffort(model?: Model | null) {
+  return model?.provider === 'anthropic'
+    && (model.providerModelId === 'claude-opus-4-6' || model.providerModelId === 'claude-opus-4-7');
+}
+
 const showClaudeCliEffortSetting = computed(() => {
-  return selectedModel.value?.provider === 'anthropic' && selectedModel.value?.providerModelId === 'claude-opus-4-6';
+  return modelSupportsClaudeCliEffort(selectedModel.value);
 });
 
 // Flag to prevent loading participants right after saving them
@@ -958,7 +963,7 @@ watch(() => settings.value.model, (modelId) => {
       maxTokens: validatedMaxTokens,
       topP: undefined,
       topK: undefined,
-      ...(model.provider === 'anthropic' && model.providerModelId === 'claude-opus-4-6' ? { effort: 'medium' } : {}),
+      ...(modelSupportsClaudeCliEffort(model) ? { effort: 'medium' } : {}),
       modelSpecific: modelSpecificDefaults,
     };
     
@@ -974,7 +979,7 @@ watch(() => settings.value.model, (modelId) => {
       thinkingEnabled.value = false;
     }
     
-    if (model.provider !== 'anthropic' || model.providerModelId !== 'claude-opus-4-6') {
+    if (!modelSupportsClaudeCliEffort(model)) {
       settings.value.settings.effort = undefined;
     } else if (!settings.value.settings.effort) {
       settings.value.settings.effort = 'medium';
